@@ -1,0 +1,30 @@
+[Unit]
+Description=NinjaOne Agent (containerized)
+After=network-online.target
+Wants=network-online.target
+
+[Container]
+Image=ghcr.io/dtc-inc/ninjaone-fedora-container:latest
+ContainerName=ninjarmm-agent
+HostName=%H
+Network=host
+
+PodmanArgs=--pid=host --ipc=host --privileged
+
+Volume=ninjarmm-state:/state
+
+Volume=/sys:/sys:ro
+Volume=/dev:/dev
+
+Volume=/:/host:ro,rslave
+Volume=/etc:/host/etc:rw,rslave
+Volume=/var:/host/var:rw,rslave
+Volume=/home:/host/home:rw,rslave
+
+[Service]
+Restart=always
+TimeoutStartSec=300
+ExecStopPost=-/bin/umount /opt/NinjaRMMAgent
+
+[Install]
+WantedBy=multi-user.target default.target

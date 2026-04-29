@@ -1,0 +1,68 @@
+ARG FEDORA_VERSION=41
+FROM registry.fedoraproject.org/fedora:${FEDORA_VERSION}
+
+LABEL org.opencontainers.image.source="https://github.com/DTC-Inc/ninjaone-fedora-container"
+LABEL org.opencontainers.image.description="NinjaOne Linux agent packaged as a Fedora container with full host visibility via mount-namespace handoff."
+LABEL org.opencontainers.image.licenses="MIT"
+LABEL io.dtc.product="ninjaone-fedora-container"
+
+RUN dnf -y install \
+        bash-completion \
+        zsh \
+        tmux \
+        nano \
+        vim-enhanced \
+        less \
+        man-db \
+        sudo \
+        which \
+        file \
+        findutils \
+        coreutils \
+        util-linux \
+        procps-ng \
+        psmisc \
+        iproute \
+        iputils \
+        bind-utils \
+        net-tools \
+        traceroute \
+        mtr \
+        nmap-ncat \
+        openssh-clients \
+        rsync \
+        wget \
+        curl \
+        ca-certificates \
+        openssl \
+        jq \
+        git \
+        tar \
+        gzip \
+        bzip2 \
+        xz \
+        zstd \
+        unzip \
+        htop \
+        lsof \
+        strace \
+        tcpdump \
+        smartmontools \
+        lm_sensors \
+        pciutils \
+        usbutils \
+        hostname \
+        python3 \
+        python3-pip \
+    && dnf clean all \
+    && rm -rf /var/cache/dnf
+
+COPY agent.rpm /tmp/agent.rpm
+RUN dnf -y install /tmp/agent.rpm || true \
+    && rm -f /tmp/agent.rpm
+
+COPY entrypoint.sh /usr/local/bin/entrypoint.sh
+RUN chmod 755 /usr/local/bin/entrypoint.sh
+
+STOPSIGNAL SIGTERM
+ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]

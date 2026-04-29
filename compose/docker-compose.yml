@@ -1,0 +1,40 @@
+services:
+  ninjarmm-agent:
+    image: ghcr.io/dtc-inc/ninjaone-fedora-container:latest
+    container_name: ninjarmm-agent
+    hostname: ${HOSTNAME:-ninjarmm-agent}
+    restart: always
+
+    # Host-level visibility: process, network, IPC namespaces shared with host.
+    # Privileged + /sys + /dev so the agent can inventory hardware and call
+    # nsenter into PID 1's mount namespace from inside.
+    pid: host
+    ipc: host
+    network_mode: host
+    privileged: true
+    cap_add:
+      - SYS_ADMIN
+
+    volumes:
+      # Persistent state — agent install, runtime data, internal logs;
+      # also /state/{docdb,db,logs} for downstream scripts.
+      - ninjarmm-state:/state
+
+      # Hardware visibility.
+      - /sys:/sys:ro
+      - /dev:/dev
+
+      # Host filesystem: read-only baseline + selective writable surfaces.
+      # Scripts that need to mutate host state target /host/etc, /host/var,
+      # /host/home explicitly. Everything else under /host is read-only.
+      - /:/host:ro,rslave
+      - /etc:/host/etc:rw,rslave
+      - /var:/host/var:rw,rslave
+      - /home:/host/home:rw,rslave
+
+    stop_signal: SIGTERM
+    stop_grace_period: 90s
+
+volumes:
+  ninjarmm-state:
+    name: ninjarmm-state

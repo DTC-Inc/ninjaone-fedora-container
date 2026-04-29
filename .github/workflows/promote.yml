@@ -1,0 +1,60 @@
+name: Promote on merge
+
+on:
+  pull_request:
+    branches: [development, release]
+    types: [closed]
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+
+jobs:
+  promote:
+    if: github.event.pull_request.merged == true
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve version + branch slug + base
+        id: vars
+        run: |
+          VERSION=$(cat VERSION | tr -d '[:space:]')
+          SLUG=$(echo "${{ github.event.pull_request.head.ref }}" \
+                 | tr '/' '-' \
+                 | tr -c 'a-zA-Z0-9._-' '-')
+          {
+            echo "version=${VERSION}"
+            echo "slug=${SLUG}"
+            echo "base_ref=${{ github.event.pull_request.base.ref }}"
+          } >> "$GITHUB_OUTPUT"
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Retag for development merges
+        if: steps.vars.outputs.base_ref == 'development'
+        run: |
+          SRC="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.vars.outputs.version }}-${{ steps.vars.outputs.slug }}"
+          docker buildx imagetools create \
+            --tag "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:dev" \
+            --tag "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.vars.outputs.version }}-dev" \
+            "$SRC"
+
+      - name: Retag for release merges
+        if: steps.vars.outputs.base_ref == 'release'
+        run: |
+          SRC="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.vars.outputs.version }}-${{ steps.vars.outputs.slug }}"
+          docker buildx imagetools create \
+            --tag "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.vars.outputs.version }}" \
+            --tag "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:release" \
+            --tag "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest" \
+            "$SRC"

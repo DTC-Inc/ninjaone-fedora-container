@@ -1,0 +1,70 @@
+name: Build PR
+
+on:
+  pull_request:
+    branches: [development, release]
+    types: [opened, synchronize, reopened]
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve version + branch slug
+        id: vars
+        run: |
+          VERSION=$(cat VERSION | tr -d '[:space:]')
+          SHORT_SHA=${GITHUB_SHA::7}
+          SLUG=$(echo "${{ github.event.pull_request.head.ref }}" \
+                 | tr '/' '-' \
+                 | tr -c 'a-zA-Z0-9._-' '-')
+          {
+            echo "version=${VERSION}"
+            echo "short_sha=${SHORT_SHA}"
+            echo "slug=${SLUG}"
+          } >> "$GITHUB_OUTPUT"
+
+      # The published image is a no-agent base. The Containerfile expects an
+      # agent.rpm in the build context — we drop a zero-byte placeholder and
+      # the install line tolerates a non-RPM file via `|| true`. Downstream
+      # consumers layer their token-stamped RPM on top.
+      - name: Stage no-agent build context
+        run: |
+          mkdir -p build-ctx
+          cp docker/Containerfile build-ctx/Containerfile
+          cp docker/entrypoint.sh build-ctx/entrypoint.sh
+          : > build-ctx/agent.rpm
+
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: build-ctx
+          file: build-ctx/Containerfile
+          platforms: linux/amd64
+          push: true
+          tags: |
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.vars.outputs.version }}-${{ steps.vars.outputs.slug }}-${{ steps.vars.outputs.short_sha }}
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.vars.outputs.version }}-${{ steps.vars.outputs.slug }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.event.pull_request.head.sha }}
+            org.opencontainers.image.version=${{ steps.vars.outputs.version }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

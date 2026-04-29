@@ -1,0 +1,24 @@
+# NinjaOne agent RPMs are token-stamped per deployment — never commit them
+*.rpm
+
+# Local build artifacts
+build/
+dist/
+
+# Environment
+.env
+.env.*
+!.env.example
+
+# Claude Code
+.claude/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
