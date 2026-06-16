@@ -78,23 +78,31 @@ else
     exit 1
 fi
 
-HOST_STATE=$(awk '$5 == "/state" { print $4; exit }' /proc/self/mountinfo)
-if [ -z "$HOST_STATE" ]; then
-    echo "[entrypoint] FATAL: could not resolve host path for /state volume" >&2
-    exit 1
-fi
-HOST_AGENT_PATH="$HOST_STATE/ninjarmm/app"
+# The agent install ($AGENT_TARGET, inside the persistent volume) has to appear
+# at the canonical /opt/NinjaRMMAgent in the HOST mount namespace, since that's
+# where the agent (run via nsenter) and its self-updater expect it. Reach the
+# volume subtree from the host namespace via the entrypoint's own procfs root:
+# /proc/<pid>/root/<path> follows that process's filesystem view across mount
+# namespaces, so it resolves regardless of WHERE the volume's backing
+# filesystem is mounted on the host. (Relies on --pid=host, already required
+# for `nsenter -t 1` to reach host init.)
+#
+# The earlier approach — reading the host path from /proc/self/mountinfo field 4
+# — only worked when the volume's filesystem was mounted at the host root (podman
+# on ostree). On TrueNAS SCALE the Docker volumes live on a separate dataset, so
+# field 4 is a path WITHIN that dataset (/volumes/<name>/_data) that does not
+# exist at that location in the host namespace, and the bind failed with
+# "special device ... does not exist".
+AGENT_PID=$$
+AGENT_SRC="/proc/$AGENT_PID/root$AGENT_TARGET"
+echo "[entrypoint] Binding agent install ($AGENT_TARGET) onto /opt/NinjaRMMAgent in host ns via $AGENT_SRC"
 
-echo "[entrypoint] /state on host: $HOST_STATE"
-echo "[entrypoint] Agent binary on host: $HOST_AGENT_PATH/programfiles/ninjarmm-linagent"
-
-# Make the agent install visible at the canonical /opt/NinjaRMMAgent in the
-# host mount namespace. Creating the mountpoint writes to the host root; on
-# hosts where / is read-only with no writable /opt redirect (TrueNAS SCALE and
-# similar appliances — unlike ostree distros where /opt -> /var/opt is
-# writable) the mkdir fails. In that case overlay /opt with a tmpfs just to
-# hold the bind target. The bind itself is a VFS op and works on a read-only
-# root once the mountpoint exists.
+# Creating the /opt/NinjaRMMAgent mountpoint writes to the host root; on hosts
+# where / is read-only with no writable /opt redirect (TrueNAS SCALE and similar
+# appliances — unlike ostree distros where /opt -> /var/opt is writable) the
+# mkdir fails. In that case overlay /opt with a tmpfs just to hold the bind
+# target; the bind itself is a VFS op and works on a read-only root once the
+# mountpoint exists.
 #
 # Mount the tmpfs unconditionally once the mkdir has proven /opt is read-only:
 # on these appliances /opt is itself already a (read-only) mountpoint, so a
@@ -110,7 +118,7 @@ nsenter -t 1 -m -- bash -c "
         mount -t tmpfs tmpfs /opt
         mkdir -p /opt/NinjaRMMAgent
     fi
-    mountpoint -q /opt/NinjaRMMAgent || mount --bind '$HOST_AGENT_PATH' /opt/NinjaRMMAgent
+    mountpoint -q /opt/NinjaRMMAgent || mount --bind '$AGENT_SRC' /opt/NinjaRMMAgent
 "
 
 (
