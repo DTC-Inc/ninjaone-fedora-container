@@ -5,6 +5,15 @@ services:
     hostname: ${HOSTNAME:-ninjarmm-agent}
     restart: always
 
+    # NINJA_AGENT_URL: public download link for the token-stamped NinjaOne
+    # Linux agent RPM (NinjaOne console -> Add Devices -> Linux). The entrypoint
+    # downloads + installs it on first run, only if no agent is already in the
+    # ninjarmm-state volume. Leave unset if the image was built with a baked-in
+    # agent.rpm. Put the value in a .env file next to this compose file.
+    environment:
+      - NINJA_AGENT_URL=${NINJA_AGENT_URL:-}
+      - PATCHER_INTERVAL=${PATCHER_INTERVAL:-300}
+
     # Host-level visibility: process, network, IPC namespaces shared with host.
     # Privileged + /sys + /dev so the agent can inventory hardware and call
     # nsenter into PID 1's mount namespace from inside.
