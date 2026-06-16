@@ -25,6 +25,11 @@ AGENT_TARGET="$STATE/ninjarmm/app"
 AGENT_BIN_REL="programfiles/ninjarmm-linagent"
 PATCHER_INTERVAL=${PATCHER_INTERVAL:-300}
 NINJA_AGENT_URL="${NINJA_AGENT_URL:-}"
+# Strip whitespace some compose editors fold into long values (notably the
+# TrueNAS Custom App YAML editor, which wraps long lines and injects a space or
+# newline mid-URL — curl then rejects it as "Malformed input to a URL
+# function"). A URL never contains literal whitespace, so this is safe.
+NINJA_AGENT_URL="$(printf '%s' "$NINJA_AGENT_URL" | tr -d '[:space:]')"
 
 mkdir -p \
     "$STATE/docdb" \
