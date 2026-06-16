@@ -5,9 +5,9 @@ This is a DTC repo. Cross-cutting engineering standards (branching, PR process, 
 ## TL;DR
 
 1. Branch from `development` with a name like `enhancement/<short-desc>` or `problem/<short-desc>`.
-2. Drop your token-stamped agent RPM at the repo root as `./agent.rpm` (gitignored).
-3. Build locally: `./scripts/build.sh`.
-4. Test on a dev VM or your own machine: `sudo ./scripts/install.sh`.
+2. Provide the agent one of two ways: drop your token-stamped RPM at the repo root as `./agent.rpm` (gitignored) to bake it in, **or** skip the RPM and set `NINJA_AGENT_URL` so the container downloads it at runtime.
+3. Build locally: `./scripts/build.sh` (only needed for the baked-RPM path; the runtime-download path uses the prebuilt public image).
+4. Test on a dev VM or your own machine: `sudo ./scripts/install.sh` (set `NINJA_AGENT_URL=...` for the download path).
 5. Bump `VERSION` per [Semantic Versioning](https://kb.dtctoday.com/books/developer-operations-devops/page/semantic-versioning).
 6. Open a PR against `development`. CI builds + emits a per-PR pinnable image tag.
 7. Merge after review. CI promotes via tag re-push (no rebuild on merge).
@@ -127,9 +127,9 @@ Three workflows in `.github/workflows/`:
 | `promote.yml` | `pull_request: closed` with `merged: true` | Retags via `docker buildx imagetools create` — `dev`+`{version}-dev` for dev merges, `latest`+`release`+`{version}` for release merges |
 | `release.yml` | Push of a `v*` tag | Manual release path; builds + creates a GitHub Release with auto-generated changelog |
 
-**Note**: published images don't include a token-stamped RPM. The workflow builds with a placeholder/no-RPM model — downstream consumers (DTC org-specific deployments) layer their RPM on top via a one-step `FROM` build.
+**Note**: published images don't include a token-stamped RPM. CI stages a zero-byte `agent.rpm` placeholder and the Containerfile's `dnf -y install ... || true` tolerates it, so the published image is agent-free by design.
 
-For the no-RPM workflow, the Containerfile's `COPY agent.rpm` + `dnf install` lines need a conditional path. The current implementation in this branch fails the build if `agent.rpm` is missing — that's intentional for local dev. The CI variant builds with a stub or skip; track this in `enhancement/ci-no-rpm` (TBD).
+Agent-free images get their agent at runtime: set `NINJA_AGENT_URL` and the entrypoint downloads + installs it on first run (only if the `ninjarmm-state` volume doesn't already have it). Baking remains supported for local dev — drop a real `./agent.rpm` and `scripts/build.sh` layers it in. Downstream consumers can still layer an RPM via a one-step `FROM` build instead of using the URL.
 
 ## Versioning specifics
 

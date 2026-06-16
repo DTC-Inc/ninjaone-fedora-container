@@ -25,9 +25,34 @@ The agent runs **inside a Fedora container** with a managed lifecycle but **oper
 - Linux x86_64 host (kernel ≥ 5.6 for full mount-propagation support)
 - Either Podman ≥ 4.4 (for quadlet support) or Docker ≥ 24
 - Ability to run a privileged container (`--privileged --pid=host`)
-- A token-stamped NinjaOne agent RPM downloaded from your console
+- Your NinjaOne Linux agent RPM, as **either**:
+  - a public download URL (`NINJA_AGENT_URL`) — the container fetches + installs it on first run; pair it with the prebuilt public image, no local build needed, **or**
+  - a token-stamped `agent.rpm` baked in at build time (the original flow)
 
-## Quick start (Podman + quadlet — recommended)
+## Quick start (public image + URL — no build, recommended)
+
+Use the prebuilt no-agent base image and let the container install the agent on first run. Get the download link from the NinjaOne console (Add Devices → Linux → pick distro/arch → copy the link).
+
+Podman + quadlet:
+```bash
+git clone git@github.com:DTC-Inc/ninjaone-fedora-container.git ~/github/dtc-inc/ninjaone-fedora-container
+cd ~/github/dtc-inc/ninjaone-fedora-container
+
+sudo NINJA_AGENT_URL='https://<your-console>/...agent.rpm' \
+     IMAGE=ghcr.io/dtc-inc/ninjaone-fedora-container:latest \
+     ./scripts/install.sh
+```
+
+Docker Compose:
+```bash
+cd compose
+echo "NINJA_AGENT_URL=https://<your-console>/...agent.rpm" > .env
+docker compose up -d
+```
+
+The agent downloads + installs only on first run; once it's in the `ninjarmm-state` volume, restarts and upgrades skip the download. The URL carries a NinjaOne org token — `install.sh` stores it at `/etc/ninjarmm-agent.env` (0600), and the compose `.env` is gitignored. Don't commit it.
+
+## Quick start (Podman + quadlet, baked RPM)
 
 ```bash
 # 1. Clone
@@ -126,7 +151,7 @@ The `ninjarmm-state` named volume contains:
 | `/state/db/` | RDBMS data for downstream scripts |
 | `/state/logs/` | Log files for downstream scripts |
 
-Inside the container, the entrypoint creates this layout on first run and seeds `ninjarmm/app/` from the image's baked-in agent files.
+Inside the container, the entrypoint creates this layout on first run and populates `ninjarmm/app/` — seeding from the image's baked-in agent files if present, otherwise downloading + installing the RPM from `NINJA_AGENT_URL`. A populated volume short-circuits both: restarts never re-download.
 
 ## Host filesystem access from the container
 
@@ -177,9 +202,12 @@ Built images are published to `ghcr.io/dtc-inc/ninjaone-fedora-container` via Gi
 | `{version}-dev` | Rolling within a dev version cycle |
 | `{version}-dev-{sha}` | Immutable per-commit dev build |
 
-**Important**: the published images do **not** contain a token-stamped RPM. Each deployment must drop their own `agent.rpm` at the repo root and rebuild locally via `scripts/build.sh`, or build a deployment-specific image and push to a private registry. Token-stamped RPMs are tied to a specific NinjaOne organization/division and must not be public.
+**Important**: the published images do **not** contain a token-stamped RPM. Token-stamped RPMs are tied to a specific NinjaOne organization/division and must not be public. Deploy the public no-agent base in one of two ways:
 
-For DTC internal use we maintain per-org build images in `ghcr.io/dtc-inc/ninjaone-fedora-container-<org>` (private). The public image at `ghcr.io/dtc-inc/ninjaone-fedora-container` is a no-RPM base — pull it as `FROM` and add your RPM in a one-step downstream build.
+- **Runtime download (recommended):** run the public image and set `NINJA_AGENT_URL` to your console's agent download link. The entrypoint installs it on first run. Nothing to build; the org token lives only in your deploy-local `/etc/ninjarmm-agent.env` (quadlet) or compose `.env`.
+- **Bake at build time:** drop your own `agent.rpm` at the repo root and rebuild via `scripts/build.sh`, or layer it onto the public base in a one-step downstream `FROM` build and push to a private registry.
+
+For DTC internal use we also maintain per-org build images in `ghcr.io/dtc-inc/ninjaone-fedora-container-<org>` (private).
 
 ## Limitations
 

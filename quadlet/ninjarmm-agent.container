@@ -11,6 +11,15 @@ Network=host
 
 PodmanArgs=--pid=host --ipc=host --privileged
 
+# NINJA_AGENT_URL: public download link for the token-stamped NinjaOne Linux
+# agent RPM. The entrypoint downloads + installs it on first run, only if no
+# agent is already in the ninjarmm-state volume. Keep the (token-bearing) URL
+# out of git by setting it in /etc/ninjarmm-agent.env; the `-` prefix makes the
+# file optional, so a baked-in-RPM image works with no env file present.
+# scripts/install.sh writes this file for you when NINJA_AGENT_URL is exported.
+EnvironmentFile=-/etc/ninjarmm-agent.env
+Environment=PATCHER_INTERVAL=300
+
 Volume=ninjarmm-state:/state
 
 Volume=/sys:/sys:ro

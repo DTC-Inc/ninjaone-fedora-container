@@ -8,6 +8,12 @@
 # Usage:
 #   sudo ./scripts/install.sh
 #   sudo IMAGE=ghcr.io/dtc-inc/ninjaone-fedora-container:1.0.0 ./scripts/install.sh
+#
+# Runtime agent download (no local RPM / no build needed):
+#   sudo NINJA_AGENT_URL='https://<console>/...agent.rpm' \
+#        IMAGE=ghcr.io/dtc-inc/ninjaone-fedora-container:latest ./scripts/install.sh
+#   When NINJA_AGENT_URL is set it is written to /etc/ninjarmm-agent.env (0600),
+#   and the container downloads + installs the agent on first run.
 
 set -euo pipefail
 
@@ -18,8 +24,10 @@ fi
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 IMAGE="${IMAGE:-localhost/ninjaone-fedora-container:latest}"
+NINJA_AGENT_URL="${NINJA_AGENT_URL:-}"
 QUADLET_DIR="/etc/containers/systemd"
 QUADLET_FILE="$QUADLET_DIR/ninjarmm-agent.container"
+AGENT_ENV_FILE="/etc/ninjarmm-agent.env"
 
 if [ ! -d "$QUADLET_DIR" ]; then
     echo "FATAL: $QUADLET_DIR does not exist. Podman quadlet support requires podman >= 4.4." >&2
@@ -40,6 +48,17 @@ if [[ "$IMAGE" == localhost/* ]]; then
 else
     echo "Pulling $IMAGE..."
     podman pull "$IMAGE"
+fi
+
+# Persist the agent download URL for the quadlet's EnvironmentFile. The URL
+# carries a NinjaOne org token, so keep it 0600 and out of the world-readable
+# quadlet. Leaving NINJA_AGENT_URL unset preserves any existing env file (e.g.
+# a baked-in-RPM image needs none).
+if [ -n "$NINJA_AGENT_URL" ]; then
+    echo "Writing $AGENT_ENV_FILE..."
+    umask 077
+    printf 'NINJA_AGENT_URL=%s\n' "$NINJA_AGENT_URL" > "$AGENT_ENV_FILE"
+    chmod 0600 "$AGENT_ENV_FILE"
 fi
 
 # Generate the quadlet with the resolved image baked in.

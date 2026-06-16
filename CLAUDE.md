@@ -18,7 +18,7 @@ Owner: Nate Smith (`nate.smith@dtctoday.com`). Reviewers: TBD.
 - Base image: `registry.fedoraproject.org/fedora:41`
 - Language: Bash for entrypoint and scripts; YAML for quadlet/compose/CI
 - CI: GitHub Actions → GHCR (`ghcr.io/dtc-inc/ninjaone-fedora-container`)
-- Vendor artifact: NinjaOne Linux agent RPM (token-stamped, per-deployment, never committed)
+- Vendor artifact: NinjaOne Linux agent RPM (token-stamped, per-deployment, never committed). Acquired either at runtime via `NINJA_AGENT_URL` (entrypoint downloads + installs on first run) or baked in at build time.
 
 ## Critical invariants
 
@@ -44,6 +44,8 @@ These are easy to break and hard to debug — call them out in any review:
 | Docker compose | `compose/docker-compose.yml` |
 | Volume backing | Podman named volume `ninjarmm-state` (default storage at `/var/lib/containers/storage/volumes/ninjarmm-state/_data/`) |
 | Agent install (in volume) | `/state/ninjarmm/app/` — bound to host's `/opt/NinjaRMMAgent` by entrypoint |
+| Agent acquisition logic | `docker/entrypoint.sh` — volume → baked image → `NINJA_AGENT_URL` download, in that order |
+| Agent download URL (deploy-local) | quadlet: `/etc/ninjarmm-agent.env` (written by `install.sh`); compose: `.env` |
 | Downstream-script storage (in volume) | `/state/{docdb,db,logs}/` |
 
 ## Branch model
@@ -64,6 +66,10 @@ Per DTC standard: `development` is default, `release` is the protected promotion
 ```bash
 # Build the image locally (requires ./agent.rpm)
 ./scripts/build.sh
+
+# Deploy the public image with no local build — agent installs at runtime
+sudo NINJA_AGENT_URL='https://<console>/...agent.rpm' \
+     IMAGE=ghcr.io/dtc-inc/ninjaone-fedora-container:latest ./scripts/install.sh
 
 # Install/reinstall on this machine
 sudo ./scripts/install.sh
@@ -89,4 +95,5 @@ sudo systemctl start ninjarmm-agent
 - Containerfile is alphabetical under `dnf install`. Maintain order when adding packages.
 - Entrypoint is bash; keep it readable. Tests are deferred until we have a real CI integration runner.
 - Quadlet and compose file should stay structurally aligned — same volumes, same bind mounts, same env. If you add one, add the other.
-- The Containerfile expects `agent.rpm` at the build context root. If you're CI-building without an RPM (the public no-RPM image), the build will fail at `dnf -y install /tmp/agent.rpm` — that's intentional. The CI variant for no-RPM builds is tracked in `enhancement/ci-no-rpm` (TBD).
+- The Containerfile's `COPY agent.rpm` + `dnf -y install ... || true` tolerates a missing/placeholder RPM, so the published image is intentionally agent-free. CI (`build-pr.yml`, `release.yml`) stages a zero-byte `agent.rpm` placeholder. Agent-free images install the agent at runtime from `NINJA_AGENT_URL` — see the acquisition block at the top of `docker/entrypoint.sh`.
+- Agent acquisition is idempotent and ordered: populated volume → baked image → `NINJA_AGENT_URL` download. The volume is the source of truth, so the download fires only on a first run with nothing baked in, never on a restart. Preserve that order if you touch the entrypoint.
