@@ -1,39 +1,41 @@
 # NinjaOne Fedora Container
 
-A containerized NinjaOne Linux agent for hosts where installing the vendor RPM directly isn't viable — immutable distributions (Bazzite, Bluefin, Silverblue, Kinoite), bootc-based systems, or anywhere else the agent's RPM packaging conflicts with the host filesystem layout.
+A containerized NinjaOne Linux agent for hosts where installing the vendor RPM directly isn't viable — immutable distributions (Bazzite, Bluefin, Silverblue, Kinoite), bootc-based systems, storage appliances (TrueNAS SCALE), or anywhere else the agent's RPM packaging conflicts with the host filesystem layout.
 
-The agent runs **inside a Fedora container** with a managed lifecycle but **operates in the host's mount, PID, network, and IPC namespaces** via `nsenter`. NinjaOne sees the host's real disks, mounts, processes, hardware, and OS — not the container's overlay storage.
+The container runs its own **systemd as PID 1**, so the NinjaOne agent installs and supervises its own services exactly as it does on a normal Linux host — including the **Lockhart backup daemon** (`com.ninjarmm.lockhartd.service`), which has no other supervisor and is why a plain "agent-as-PID-1" container isn't enough. Host-level facts the agent can't see from inside its own namespace (ZFS pools, any host command) are reached by running the **host's own tools** via a namespace handoff.
 
 | Aspect | Behavior |
 |---|---|
-| Process visibility (NinjaOne "Top Processes") | Host processes |
-| Filesystem usage / SMART / disk model | Host disks (real block devices) |
-| OS reported | Host's `/etc/os-release` (e.g. Bazzite, Fedora, Ubuntu — whatever the host actually is) |
-| Hostname | Host's hostname (`%H` from systemd) |
-| Network connections | Host's interfaces and listening sockets |
-| Service control via NinjaOne (e.g. `systemctl restart sshd`) | Host's services (via `/run/systemd` propagation) |
-| Self-update (NinjaOne agent patcher) | Persisted in the `ninjarmm-state` named volume |
+| RMM presence, scripting, patching | Full — agent + patcher run as native systemd services |
+| **Backups (Lockhart / LTDR)** | **Work** — `lockhartd` runs under the container's systemd |
+| SMART / physical disk health | Host drives — `smartctl` reads `/dev` directly (privileged) |
+| ZFS pools (`zpool`, `zfs`) | Host pools, version-matched — wrappers run the host's own binaries |
+| Filesystem capacity | Host datasets mounted through at `/mnt` are reported as volumes |
+| Hostname / container name | Both set to the host's real hostname (`%H`) |
+| OS reported | The container (Fedora) — see [Reporting trade-offs](#reporting-trade-offs) |
+| Agent state / self-update | Persisted in the `ninjarmm-agent` named volume at `/opt/NinjaRMMAgent` |
 
 ## When to use this
 
-- **Yes:** Bazzite/Bluefin/Silverblue/Kinoite/CoreOS hosts, bootc images, any host where rpm-ostree refuses the NinjaOne RPM (the agent's RPM places files under `/tmp/rpmbuild/...` which rpm-ostree disallows).
-- **Yes:** Hosts where you want a clean uninstall path (drop the quadlet + remove the volume = gone).
-- **No:** Standard mutable Fedora/RHEL/Ubuntu hosts where the vendor's `dnf install` or `apt install` works without modification — use those installers directly.
+- **Yes:** TrueNAS SCALE and other appliances; Bazzite/Bluefin/Silverblue/Kinoite/CoreOS; bootc images; any host where `rpm-ostree`/read-only root refuses the NinjaOne RPM.
+- **Yes:** when you want **backups** to work (the systemd-init design exists specifically to run Lockhart).
+- **Yes:** when you want a clean uninstall (drop the quadlet/app + remove the volume = gone).
+- **No:** standard mutable Fedora/RHEL/Ubuntu hosts where the vendor's `dnf install` / `apt install` works — use those directly.
 
 ## Requirements
 
-- Linux x86_64 host (kernel ≥ 5.6 for full mount-propagation support)
-- Either Podman ≥ 4.4 (for quadlet support) or Docker ≥ 24
-- Ability to run a privileged container (`--privileged --pid=host`)
+- Linux x86_64 host
+- Podman ≥ 4.4 (quadlet) or Docker ≥ 24 (TrueNAS Custom App counts)
+- Ability to run a **privileged** container (needed for systemd's cgroup, SMART via `/dev`, and the host-namespace handoff)
 - Your NinjaOne Linux agent RPM, as **either**:
-  - a public download URL (`NINJA_AGENT_URL`) — the container fetches + installs it on first run; pair it with the prebuilt public image, no local build needed, **or**
-  - a token-stamped `agent.rpm` baked in at build time (the original flow)
+  - a public download URL (`NINJA_AGENT_URL`) — installed on first boot; pair with the prebuilt public image, no local build, **or**
+  - a token-stamped `agent.rpm` baked in at build time
 
 ## Quick start (public image + URL — no build, recommended)
 
-Use the prebuilt no-agent base image and let the container install the agent on first run. Get the download link from the NinjaOne console (Add Devices → Linux → pick distro/arch → copy the link).
+Get the download link from the NinjaOne console (Add Devices → Linux → pick distro/arch → copy the link).
 
-Podman + quadlet:
+**Podman + quadlet:**
 ```bash
 git clone git@github.com:DTC-Inc/ninjaone-fedora-container.git ~/github/dtc-inc/ninjaone-fedora-container
 cd ~/github/dtc-inc/ninjaone-fedora-container
@@ -43,150 +45,85 @@ sudo NINJA_AGENT_URL='https://<your-console>/...agent.rpm' \
      ./scripts/install.sh
 ```
 
-Docker Compose:
+**Docker Compose:**
 ```bash
 cd compose
-echo "NINJA_AGENT_URL=https://<your-console>/...agent.rpm" > .env
+cat > .env <<EOF
+NINJA_AGENT_URL=https://<your-console>/...agent.rpm
+NINJA_HOSTNAME=$(hostname)
+EOF
 docker compose up -d
 ```
 
-The agent downloads + installs only on first run; once it's in the `ninjarmm-state` volume, restarts and upgrades skip the download. The URL carries a NinjaOne org token — `install.sh` stores it at `/etc/ninjarmm-agent.env` (0600), and the compose `.env` is gitignored. Don't commit it.
+**TrueNAS SCALE (Custom App):** point it at `compose/docker-compose.yml`, set the app's **hostname** to the box name, and set `NINJA_AGENT_URL` in the environment. Privileged must be enabled.
 
-## Quick start (Podman + quadlet, baked RPM)
-
-```bash
-# 1. Clone
-git clone git@github.com:DTC-Inc/ninjaone-fedora-container.git ~/github/dtc-inc/ninjaone-fedora-container
-cd ~/github/dtc-inc/ninjaone-fedora-container
-
-# 2. Drop your token-stamped RPM at the repo root
-#    (NinjaOne console → Add Devices → Linux → pick distro/arch → save as agent.rpm)
-cp ~/Downloads/NinjaOne-Agent-*.rpm ./agent.rpm
-
-# 3. Build + install as a system service
-sudo ./scripts/install.sh
-```
-
-That installs:
-- A Podman quadlet at `/etc/containers/systemd/ninjarmm-agent.container`
-- A systemd service `ninjarmm-agent.service` (auto-generated from the quadlet)
-- A named volume `ninjarmm-state` for persistent agent state and downstream-script storage
-
-Verify:
-```bash
-sudo systemctl status ninjarmm-agent.service
-sudo podman logs -f ninjarmm-agent
-```
-
-The device should appear in your NinjaOne dashboard within a minute.
-
-## Quick start (Docker Compose — alternative)
-
-For Docker hosts (no quadlet/systemd integration; the container is supervised by Docker itself):
-
-```bash
-git clone git@github.com:DTC-Inc/ninjaone-fedora-container.git
-cd ninjaone-fedora-container
-cp ~/Downloads/NinjaOne-Agent-*.rpm ./agent.rpm
-
-BUILDER=docker ./scripts/build.sh
-
-cd compose
-docker compose up -d
-```
-
-Note: Docker Compose can't replicate `Podman --privileged --pid=host` quite as cleanly as the quadlet does (it needs `cap_add: SYS_ADMIN` for `nsenter` from a non-`--privileged` container). The compose file uses `privileged: true` for parity. If you have a hardened Docker setup that disallows privileged containers, the quadlet path is your only option.
+The agent installs only on first boot; once it's in the `ninjarmm-agent` volume, restarts and upgrades skip the download. The URL carries a NinjaOne org token — `install.sh` stores it at `/etc/ninjarmm-agent.env` (0600); the compose `.env` is gitignored. Don't commit it.
 
 ## Architecture
 
 ```
-┌─────────────────────────── HOST ───────────────────────────┐
-│                                                            │
-│   /opt/NinjaRMMAgent  ◄─── bind ───┐                       │
-│   (mounted by entrypoint via       │                       │
-│    nsenter into host's mount ns)   │                       │
-│                                    │                       │
-│   /var/lib/containers/storage/     │                       │
-│   volumes/ninjarmm-state/_data/    │                       │
-│   └── ninjarmm/app/  ──────────────┘                       │
-│       ├── programfiles/  (binaries; self-update target)    │
-│       └── programdata/   (runtime, internal logs)          │
-│   └── docdb/    (downstream scripts — JSON store)          │
-│   └── db/       (downstream scripts — RDBMS)               │
-│   └── logs/     (downstream scripts — log files)           │
-│                                                            │
-│   ┌──────────────── ninjarmm-agent ─────────────────────┐  │
-│   │  Container — Fedora userspace + admin tooling       │  │
-│   │                                                     │  │
-│   │  PID 1: entrypoint.sh                               │  │
-│   │  └─► exec nsenter -t 1 -m -- ninjarmm-linagent      │  │
-│   │      └─► AGENT runs in HOST mount namespace,        │  │
-│   │           reads host /etc/os-release, sees real     │  │
-│   │           /proc/mounts, SMART, etc.                 │  │
-│   │  └─► background loop: nsenter -- patcher every 5min │  │
-│   │                                                     │  │
-│   │  Namespace shares: --pid=host --ipc=host            │  │
-│   │  Network: host                                      │  │
-│   │  Mounts: /state, /sys, /dev, /host{,/etc,/var,/home}│  │
-│   └─────────────────────────────────────────────────────┘  │
-│                                                            │
-└────────────────────────────────────────────────────────────┘
+┌───────────────────────────── HOST (e.g. TrueNAS SCALE) ─────────────────────────────┐
+│                                                                                      │
+│   ZFS pools under /mnt ──────────────┐  physical drives in /dev ──────┐              │
+│                                      │                                │              │
+│   ┌──────────────── container (named = host's hostname) ────────────┐ │              │
+│   │  PID 1: systemd                                                  │ │              │
+│   │   ├─ ninjarmm-bootstrap.service  (first boot: install agent RPM) │ │              │
+│   │   ├─ ninjarmm-agent.service      (the agent)                     │ │              │
+│   │   ├─ ninjarmm-patcher.timer      (self-update)                   │ │              │
+│   │   └─ com.ninjarmm.lockhartd.service  (BACKUPS)                   │ │              │
+│   │                                                                  │ │              │
+│   │  /opt/NinjaRMMAgent  ◄── ninjarmm-agent volume (install + state) │ │              │
+│   │  /dev  ◄────────────────── SMART reads drives directly ──────────┼─┘              │
+│   │  /mnt  ◄────────────────── host datasets (df reporting + backup) │                │
+│   │  /host (+ /host/proc) ◄─── host / read-only                      │                │
+│   │     └─ in-host / zpool / zfs  ─► nsenter into /host/proc/1/ns/*   │                │
+│   │        run the HOST's own tools (version-matched ZFS) ───────────┼──► host pools  │
+│   └──────────────────────────────────────────────────────────────────┘              │
+│                                                                                      │
+└──────────────────────────────────────────────────────────────────────────────────────┘
 ```
 
-The key idea: the **container's mount namespace** holds the agent's install (`/opt/NinjaRMMAgent` bound from the volume), but the **agent process itself runs in the host's mount namespace** via `nsenter -t 1 -m`. So:
+Key points:
 
-- The agent reads host's `/proc/self/mountinfo` → reports host filesystems correctly
-- The agent reads host's `/etc/os-release` → reports the real host OS (Bazzite/Fedora/Ubuntu/whatever)
-- The agent's binary path resolves through the host bind we set up at `/opt/NinjaRMMAgent`
-- The agent's writes (self-update, runtime data) land in the named volume via that bind
+- **systemd is PID 1.** The agent's RPM installs `ninjarmm-agent.service`, the patcher timer, and (on policy) the Lockhart backup daemon. The container's own systemd supervises them — so backups run. The container is **not** `--pid=host` (systemd must be PID 1).
+- **The agent runs in the container's namespace.** A plain volume at `/opt/NinjaRMMAgent` is its persistent install + identity store — no bind/nsenter handoff for the agent itself.
+- **Host introspection is on demand.** `in-host <cmd>` enters the host's namespaces via the bind-mounted host `/proc` (`/host/proc/1/ns/*`) and runs the host's own binary. `zpool` and `zfs` are symlinks to it, so NinjaOne scripts and the remote terminal get real, version-matched ZFS against the host pools without installing a (mismatched) zfs userland in the container.
+- **SMART** works because `smartctl` reads the block devices in `/dev` directly — that's device-level, namespace-independent.
 
-## State layout
+## Reporting trade-offs
 
-The `ninjarmm-state` named volume contains:
+Running the agent in the container (required for backups) changes a few reported facts versus a bare-metal install. Know these going in:
 
-| Path | Purpose |
-|---|---|
-| `/state/ninjarmm/app/` | Agent install (bound to `/opt/NinjaRMMAgent` on host) |
-| `/state/docdb/` | JSON / document store for downstream scripts |
-| `/state/db/` | RDBMS data for downstream scripts |
-| `/state/logs/` | Log files for downstream scripts |
-
-Inside the container, the entrypoint creates this layout on first run and populates `ninjarmm/app/` — seeding from the image's baked-in agent files if present, otherwise downloading + installing the RPM from `NINJA_AGENT_URL`. A populated volume short-circuits both: restarts never re-download.
+| Fact | Result | Notes |
+|---|---|---|
+| Disk health (SMART) | **Accurate** | `/dev` + privileged |
+| ZFS pool health | **Via scripts** | `zpool status` etc. through the `zpool`/`zfs` wrappers; NinjaOne has no native ZFS |
+| Filesystem capacity | Host datasets mounted at `/mnt` are reported | bind-through; pool-level detail still best from TrueNAS's own alerting |
+| Installed packages | The **container's** RPM db, not the host's | inherent to containerizing the agent |
+| OS / distro | Reports **Fedora** (the container), not the host OS | the agent reads its own `/etc/os-release` |
+| Hostname | The host's real hostname | set via `%H` / `NINJA_HOSTNAME` |
 
 ## Host filesystem access from the container
 
-When you `podman exec -it ninjarmm-agent bash`, you're in the **container's** mount namespace, which has:
+`podman exec -it <hostname> bash` (or the NinjaOne remote terminal) drops you in the container, which has:
 
 | Container path | Host path | Mode |
 |---|---|---|
+| `/opt/NinjaRMMAgent` | `ninjarmm-agent` volume | read-write (agent install + state) |
+| `/mnt` | `/mnt` | read-write (host datasets) |
 | `/host` | `/` | read-only baseline |
-| `/host/etc` | `/etc` | read-write |
-| `/host/var` | `/var` | read-write |
-| `/host/home` | `/home` | read-write |
-| `/sys`, `/dev` | `/sys`, `/dev` | shared (privileged) |
-| `/state` | named volume | read-write |
+| `/host/proc` | `/proc` | read-only (namespace handoff source) |
+| `/host/etc`, `/host/var` | `/etc`, `/var` | read-write |
+| `/dev` | `/dev` | shared (privileged) |
 
-Convention for downstream scripts: read host config from `/host/...`, write host changes to `/host/etc`, `/host/var`, or `/host/home`. Scratch space: `/state/{docdb,db,logs}` for persistence; `/tmp` for ephemeral.
-
-## NinjaOne agent self-update
-
-The agent's built-in patcher is invoked every `PATCHER_INTERVAL` seconds (default 300) by a background loop in the entrypoint. Patcher runs `nsenter`'d into host's mount namespace; updates write to `/opt/NinjaRMMAgent` which is bound to the volume's `ninjarmm/app/` directory — so updates persist across container restarts.
-
-When **we** publish a new image (new RPM baseline, new tooling, base image bump), the named volume already has whatever the agent self-patched to. To force the new image's baseline to take effect:
-
-```bash
-sudo systemctl stop ninjarmm-agent.service
-sudo podman volume rm ninjarmm-state
-sudo systemctl start ninjarmm-agent.service
-```
-
-The first run after deletion re-seeds from the new image. Then NinjaOne's patcher takes over again.
+Run any host command with `in-host <cmd>` (e.g. `in-host zpool status`, `in-host systemctl restart sshd`). `zpool`/`zfs` work bare.
 
 ## Uninstall
 
 ```bash
-sudo ./scripts/uninstall.sh                  # leaves named volume in place
-sudo PURGE_STATE=1 ./scripts/uninstall.sh    # also removes the volume
+sudo ./scripts/uninstall.sh                  # leaves the agent volume in place
+sudo PURGE_STATE=1 ./scripts/uninstall.sh    # also removes the ninjarmm-agent volume
 sudo PURGE_IMAGE=1 ./scripts/uninstall.sh    # also removes the image
 ```
 
@@ -196,30 +133,25 @@ Built images are published to `ghcr.io/dtc-inc/ninjaone-fedora-container` via Gi
 
 | Tag | Meaning |
 |---|---|
-| `{version}` (e.g. `0.7.0`) | Pinned semver release — production safe |
+| `{version}` (e.g. `0.3.0`) | Pinned semver release — production safe |
 | `release` / `latest` | Rolling pointer to most recent release |
 | `dev` | Rolling pointer to most recent development build |
 | `{version}-dev` | Rolling within a dev version cycle |
 | `{version}-dev-{sha}` | Immutable per-commit dev build |
 
-**Important**: the published images do **not** contain a token-stamped RPM. Token-stamped RPMs are tied to a specific NinjaOne organization/division and must not be public. Deploy the public no-agent base in one of two ways:
-
-- **Runtime download (recommended):** run the public image and set `NINJA_AGENT_URL` to your console's agent download link. The entrypoint installs it on first run. Nothing to build; the org token lives only in your deploy-local `/etc/ninjarmm-agent.env` (quadlet) or compose `.env`.
-- **Bake at build time:** drop your own `agent.rpm` at the repo root and rebuild via `scripts/build.sh`, or layer it onto the public base in a one-step downstream `FROM` build and push to a private registry.
-
-For DTC internal use we also maintain per-org build images in `ghcr.io/dtc-inc/ninjaone-fedora-container-<org>` (private).
+**Important**: published images do **not** contain a token-stamped RPM (token RPMs are org-specific and must not be public). Deploy the public no-agent base by setting `NINJA_AGENT_URL` (runtime download, recommended) or by baking your own `agent.rpm` via `scripts/build.sh`.
 
 ## Limitations
 
-- **Linux x86_64 only** today. ARM64 is on the roadmap (the only blocker is whether NinjaOne ships an ARM64 RPM — they don't yet for some package types).
-- **Container's package list and service-status reporting are container-flavored.** NinjaOne's "Installed Packages" view reflects the Fedora container's RPM database, not the host's. Service-status calls for host-managed services work via `/run/systemd` propagation, but services *inside the container* don't appear on the host's systemd. Hardware, disk, network, processes, OS — all correctly host-flavored.
-- **The container needs a podman/docker installation on the host.** rpm-ostree-based hosts that don't already include podman would need `rpm-ostree install podman` first (which does work — podman packages cleanly).
+- **Linux x86_64 only** today.
+- **Installed-packages and OS reporting are container-flavored** (see [Reporting trade-offs](#reporting-trade-offs)). Hardware, SMART, and host commands via `in-host` are host-accurate.
+- **The host needs podman or docker** (TrueNAS SCALE ships docker; rpm-ostree hosts can `rpm-ostree install podman`).
+- **Privileged required** — for systemd's cgroup, SMART, and the host-namespace handoff. Hardened hosts that forbid privileged containers can't run this.
 
 ## Related
 
 - [DEVELOPMENT.md](./DEVELOPMENT.md) — contributor guide
 - [DTC DevOps standards](https://kb.dtctoday.com/books/developer-operations-devops) (internal)
-- [NinjaOne Linux agent docs](https://www.ninjaone.com/) (vendor)
 
 ## License
 

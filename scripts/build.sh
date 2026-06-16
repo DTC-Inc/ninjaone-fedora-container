@@ -29,7 +29,9 @@ BUILD_CTX="$(mktemp -d)"
 trap 'rm -rf "$BUILD_CTX"' EXIT
 
 cp "$REPO_ROOT/docker/Containerfile" "$BUILD_CTX/Containerfile"
-cp "$REPO_ROOT/docker/entrypoint.sh" "$BUILD_CTX/entrypoint.sh"
+cp "$REPO_ROOT/docker/ninjarmm-bootstrap.sh" "$BUILD_CTX/ninjarmm-bootstrap.sh"
+cp "$REPO_ROOT/docker/ninjarmm-bootstrap.service" "$BUILD_CTX/ninjarmm-bootstrap.service"
+cp "$REPO_ROOT/docker/in-host" "$BUILD_CTX/in-host"
 cp "$RPM_PATH" "$BUILD_CTX/agent.rpm"
 
 echo "Building $IMAGE with $BUILDER (Fedora $FEDORA_VERSION)..."

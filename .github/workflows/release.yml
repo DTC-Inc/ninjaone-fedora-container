@@ -40,8 +40,8 @@ jobs:
       - name: Stage no-agent build context
         run: |
           mkdir -p build-ctx
-          cp docker/Containerfile build-ctx/Containerfile
-          cp docker/entrypoint.sh build-ctx/entrypoint.sh
+          cp docker/Containerfile docker/ninjarmm-bootstrap.sh \
+             docker/ninjarmm-bootstrap.service docker/in-host build-ctx/
           : > build-ctx/agent.rpm
 
       - uses: docker/setup-qemu-action@v3

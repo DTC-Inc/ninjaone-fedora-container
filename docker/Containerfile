@@ -2,67 +2,69 @@ ARG FEDORA_VERSION=41
 FROM registry.fedoraproject.org/fedora:${FEDORA_VERSION}
 
 LABEL org.opencontainers.image.source="https://github.com/DTC-Inc/ninjaone-fedora-container"
-LABEL org.opencontainers.image.description="NinjaOne Linux agent packaged as a Fedora container with full host visibility via mount-namespace handoff."
+LABEL org.opencontainers.image.description="NinjaOne Linux agent as a systemd-init Fedora container: agent, patcher, and the Lockhart backup daemon run as native systemd services; host disk/ZFS/SMART introspection via host-namespace handoff."
 LABEL org.opencontainers.image.licenses="MIT"
 LABEL io.dtc.product="ninjaone-fedora-container"
 
+# Toolset + systemd. systemd runs as PID 1 so the NinjaOne agent can install and
+# supervise its own services exactly as on a normal host -- ninjarmm-agent, the
+# patcher timer, and (the reason we need systemd at all) the Lockhart backup
+# daemon com.ninjarmm.lockhartd.service, which has no other supervisor.
+#
+# We deliberately do NOT install the zfs userland here: its ioctl ABI is tied to
+# the host kernel's OpenZFS version, which a Fedora package would not match. ZFS
+# commands run the HOST's own binaries via the in-host wrapper instead.
 RUN dnf -y install \
-        bash-completion \
-        zsh \
-        tmux \
-        nano \
-        vim-enhanced \
-        less \
-        man-db \
-        sudo \
-        which \
-        file \
-        findutils \
-        coreutils \
-        util-linux \
-        procps-ng \
-        psmisc \
-        iproute \
-        iputils \
-        bind-utils \
-        net-tools \
-        traceroute \
-        mtr \
-        nmap-ncat \
-        openssh-clients \
-        rsync \
-        wget \
-        curl \
-        ca-certificates \
-        openssl \
-        jq \
-        git \
-        tar \
-        gzip \
-        bzip2 \
-        xz \
-        zstd \
-        unzip \
-        htop \
-        lsof \
-        strace \
-        tcpdump \
-        smartmontools \
-        lm_sensors \
-        pciutils \
-        usbutils \
-        hostname \
-        python3 \
-        python3-pip \
+        systemd \
+        bash-completion zsh tmux nano vim-enhanced less man-db \
+        sudo which file findutils coreutils util-linux procps-ng psmisc \
+        iproute iputils bind-utils net-tools traceroute mtr nmap-ncat \
+        openssh-clients rsync wget curl ca-certificates openssl jq git \
+        tar gzip bzip2 xz zstd unzip \
+        htop lsof strace tcpdump \
+        smartmontools lm_sensors pciutils usbutils hostname \
+        python3 python3-pip \
     && dnf clean all \
     && rm -rf /var/cache/dnf
 
+# systemd-in-container hygiene: mask units that need real hardware or a console
+# and would only fail/slow the boot. The agent + backup services are unaffected.
+RUN systemctl set-default multi-user.target \
+    && systemctl mask \
+        getty.target \
+        console-getty.service \
+        systemd-udevd.service \
+        systemd-udev-trigger.service \
+        systemd-remount-fs.service \
+        dev-hugepages.mount \
+        sys-fs-fuse-connections.mount \
+        sys-kernel-config.mount
+
+# First-boot bootstrap: downloads + installs the token-stamped agent RPM if the
+# persistent /opt/NinjaRMMAgent volume is empty, then enables the agent service.
+COPY ninjarmm-bootstrap.sh /usr/local/bin/ninjarmm-bootstrap.sh
+COPY ninjarmm-bootstrap.service /etc/systemd/system/ninjarmm-bootstrap.service
+
+# Host-namespace handoff: in-host runs a command inside the host's namespaces
+# (via the bind-mounted host /proc), so the host's own tools answer. zpool/zfs
+# are symlinks to it -> NinjaOne scripts and the remote terminal get real,
+# version-matched ZFS against the host pools without installing zfs in here.
+COPY in-host /usr/local/bin/in-host
+
+# Optional baked agent. CI stages a zero-byte placeholder, so `|| true` keeps the
+# build green; real deployments download at first boot via NINJA_AGENT_URL.
 COPY agent.rpm /tmp/agent.rpm
-RUN dnf -y install /tmp/agent.rpm || true \
-    && rm -f /tmp/agent.rpm
 
-COPY entrypoint.sh /usr/local/bin/entrypoint.sh
-RUN chmod 755 /usr/local/bin/entrypoint.sh
+RUN chmod 0755 /usr/local/bin/ninjarmm-bootstrap.sh /usr/local/bin/in-host \
+    && ln -sf in-host /usr/local/bin/zpool \
+    && ln -sf in-host /usr/local/bin/zfs \
+    && systemctl enable ninjarmm-bootstrap.service \
+    && mkdir -p /opt/NinjaRMMAgent
 
-STOPSIGNAL SIGTERM
-ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
+# `|| true`: a zero-byte placeholder (CI) or a vendor %post that assumes a booted
+# host can return nonzero; the agent still installs cleanly on first real boot.
+RUN dnf -y install /tmp/agent.rpm || true; rm -f /tmp/agent.rpm
+
+# systemd's clean-shutdown signal.
+STOPSIGNAL SIGRTMIN+3
+ENTRYPOINT ["/usr/sbin/init"]

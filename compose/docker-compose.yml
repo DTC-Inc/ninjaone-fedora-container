@@ -1,49 +1,63 @@
 services:
   ninjarmm-agent:
     image: ghcr.io/dtc-inc/ninjaone-fedora-container:latest
-    container_name: ninjarmm-agent
-    hostname: ${HOSTNAME:-ninjarmm-agent}
+
+    # container_name AND hostname are both the HOST's real hostname, so the agent
+    # checks into NinjaOne as the box (e.g. trh-lib-vault001), not "ninjarmm-agent".
+    # On TrueNAS set the Custom App's hostname to the box name; for plain compose,
+    # export NINJA_HOSTNAME=$(hostname) (scripts/install.sh does this for you).
+    container_name: ${NINJA_HOSTNAME:-ninjarmm-agent}
+    hostname: ${NINJA_HOSTNAME:-ninjarmm-agent}
     restart: always
 
-    # NINJA_AGENT_URL: public download link for the token-stamped NinjaOne
-    # Linux agent RPM (NinjaOne console -> Add Devices -> Linux). The entrypoint
-    # downloads + installs it on first run, only if no agent is already in the
-    # ninjarmm-state volume. Leave unset if the image was built with a baked-in
-    # agent.rpm. Put the value in a .env file next to this compose file.
-    environment:
-      - NINJA_AGENT_URL=${NINJA_AGENT_URL:-}
-      - PATCHER_INTERVAL=${PATCHER_INTERVAL:-300}
-
-    # Host-level visibility: process, network, IPC namespaces shared with host.
-    # Privileged + /sys + /dev so the agent can inventory hardware and call
-    # nsenter into PID 1's mount namespace from inside.
-    pid: host
-    ipc: host
-    network_mode: host
+    # systemd runs as PID 1 inside the container so the agent installs and
+    # supervises its own services -- ninjarmm-agent, the patcher timer, and the
+    # Lockhart backup daemon (com.ninjarmm.lockhartd.service). SIGRTMIN+3 is
+    # systemd's clean-shutdown signal.
+    stop_signal: SIGRTMIN+3
+    stop_grace_period: 90s
     privileged: true
     cap_add:
       - SYS_ADMIN
 
-    volumes:
-      # Persistent state — agent install, runtime data, internal logs;
-      # also /state/{docdb,db,logs} for downstream scripts.
-      - ninjarmm-state:/state
+    environment:
+      # Helps systemd detect it's containerized.
+      - container=docker
+      # Public download link for the token-stamped NinjaOne Linux agent RPM
+      # (console -> Add Devices -> Linux). Installed on first boot if the
+      # ninjarmm-agent volume is empty. Leave unset if the image baked an RPM.
+      - NINJA_AGENT_URL=${NINJA_AGENT_URL:-}
 
-      # Hardware visibility.
-      - /sys:/sys:ro
+    # systemd needs writable /run and /tmp.
+    tmpfs:
+      - /run
+      - /run/lock
+      - /tmp
+
+    volumes:
+      # cgroup hierarchy for systemd (cgroup v2).
+      - /sys/fs/cgroup:/sys/fs/cgroup:rw
+
+      # Agent install + identity + runtime data + logs persist here. With the
+      # agent now in the container's own namespace, a plain volume at the
+      # canonical path is all it needs -- no bind/nsenter handoff.
+      - ninjarmm-agent:/opt/NinjaRMMAgent
+
+      # Hardware visibility for SMART / sensors / inventory.
       - /dev:/dev
 
-      # Host filesystem: read-only baseline + selective writable surfaces.
-      # Scripts that need to mutate host state target /host/etc, /host/var,
-      # /host/home explicitly. Everything else under /host is read-only.
+      # Host filesystem handoff. Host / (incl. /proc) mounted read-only at /host
+      # lets the in-host / zpool / zfs wrappers nsenter into the host and run the
+      # host's own version-matched tools against the real pools. /mnt is mounted
+      # through so the agent reports host volume capacity and Lockhart can back
+      # up the datasets. /host/etc + /host/var are writable for host-touching
+      # scripts.
       - /:/host:ro,rslave
+      - /proc:/host/proc:ro,rslave
+      - /mnt:/mnt:rw,rslave
       - /etc:/host/etc:rw,rslave
       - /var:/host/var:rw,rslave
-      - /home:/host/home:rw,rslave
-
-    stop_signal: SIGTERM
-    stop_grace_period: 90s
 
 volumes:
-  ninjarmm-state:
-    name: ninjarmm-state
+  ninjarmm-agent:
+    name: ninjarmm-agent

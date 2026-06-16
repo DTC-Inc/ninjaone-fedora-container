@@ -17,9 +17,11 @@ This is a DTC repo. Cross-cutting engineering standards (branching, PR process, 
 ```
 ninjaone-fedora-container/
 ├── docker/
-│   ├── Containerfile          # the image
-│   └── entrypoint.sh          # PID 1 inside container — sets up volume,
-│                              # binds host paths, execs agent via nsenter
+│   ├── Containerfile               # the image (systemd as PID 1)
+│   ├── ninjarmm-bootstrap.service  # first-boot oneshot: install agent if absent
+│   ├── ninjarmm-bootstrap.sh       # the bootstrap logic
+│   └── in-host                     # run a host command via namespace handoff
+│                                   # (zpool/zfs symlink to it)
 ├── quadlet/
 │   └── ninjarmm-agent.container   # Podman quadlet (deployed to /etc/containers/systemd/)
 ├── compose/
@@ -39,11 +41,16 @@ ninjaone-fedora-container/
 └── LICENSE
 ```
 
-## Why the unusual architecture
+## Why the architecture (systemd-init)
 
-Standard "monitoring agent in a container" approach is to install the agent in the container, share `--pid=host --network=host`, mount `/host` as a window. That doesn't fully solve the *filesystem reporting* problem: the agent reads `/proc/self/mountinfo` and `statvfs()` from inside its mount namespace, so it sees container overlay storage instead of the host's real disks.
+The container runs **systemd as PID 1**. That's the load-bearing decision: NinjaOne's agent installs and supervises its own services (`ninjarmm-agent`, the patcher timer, and the **Lockhart backup daemon** `com.ninjarmm.lockhartd.service`) the way it does on a normal host. Lockhart has no other supervisor, so a leaner "agent-as-PID-1" container can't run backups — which is why this design exists.
 
-This repo uses a **mount-namespace handoff** approach: the agent process itself runs in the host's mount namespace via `nsenter -t 1 -m`. The container's mount namespace is only used during the entrypoint phase to set up the volume binds; once `nsenter` happens, the agent operates as if natively installed on the host. Disk/mount/OS reporting becomes correct without giving up the container's lifecycle benefits (image versioning, clean uninstall, isolated tool chain).
+Consequences and how we handle them:
+
+- **No `--pid=host`.** systemd must be PID 1, which rules out sharing the host PID namespace. So the agent runs in the *container's* namespace and a plain volume at `/opt/NinjaRMMAgent` is its persistent install (no bind/nsenter for the agent itself).
+- **Host introspection on demand.** Anything that must reflect host reality runs the host's own binary via `docker/in-host`, which `nsenter`s into the host namespaces through the bind-mounted host `/proc` (`/host/proc/1/ns/*`) — no `--pid=host` needed. `zpool`/`zfs` symlink to it so ZFS is version-matched against the host kernel module.
+- **SMART** reads `/dev` directly (privileged) — namespace-independent.
+- **Reporting trade-offs** (OS shows Fedora, installed-packages is the container's db, filesystem capacity comes from the bind-through of `/mnt`) are documented in [README.md § Reporting trade-offs](./README.md#reporting-trade-offs).
 
 See [README.md § Architecture](./README.md#architecture) for the full picture.
 
@@ -55,30 +62,21 @@ You'll want a target machine to test against — your own laptop is fine if it's
 # After you make changes:
 ./scripts/build.sh
 sudo systemctl stop ninjarmm-agent.service          # if installed
-sudo podman volume rm ninjarmm-state                # force re-seed if entrypoint changed
+sudo podman volume rm ninjarmm-agent                # force a clean first boot
 sudo ./scripts/install.sh
-sudo journalctl -u ninjarmm-agent.service -f        # watch the agent come up
-sudo podman exec -it ninjarmm-agent bash            # poke around inside
+sudo journalctl -u ninjarmm-agent.service -f        # quadlet service (host side)
+sudo podman exec -it "$(hostname)" journalctl -f    # systemd INSIDE the container
+sudo podman exec -it "$(hostname)" bash             # poke around inside
 ```
 
-To debug the entrypoint specifically (without it exec'ing the agent):
+The container name equals the host's hostname (`%H`), hence `$(hostname)` above. Inside, inspect the agent's own services:
 
 ```bash
-sudo podman run --rm -it \
-    --name ninjarmm-debug \
-    --pid=host --ipc=host --privileged \
-    --network host \
-    -v ninjarmm-state:/state \
-    -v /sys:/sys:ro -v /dev:/dev \
-    -v /:/host:ro,rslave \
-    -v /etc:/host/etc:rw,rslave \
-    -v /var:/host/var:rw,rslave \
-    -v /home:/host/home:rw,rslave \
-    --entrypoint=/bin/bash \
-    localhost/ninjaone-fedora-container:latest
+systemctl status ninjarmm-agent.service com.ninjarmm.lockhartd.service
+systemctl list-units 'ninjarmm*' 'com.ninjarmm*'
+journalctl -u ninjarmm-bootstrap.service            # first-boot install log
+zpool status                                        # exercises the in-host handoff
 ```
-
-Inside that shell, manually walk the entrypoint logic step by step.
 
 ## Adding admin tools to the image
 
@@ -90,21 +88,14 @@ The image ships with a curated tool set in `docker/Containerfile` — editors (n
 
 Heuristic: if a tool is something a sysadmin would `dnf install` interactively while debugging a production issue, it belongs in the image. If it's only useful to one specific script, ship it via the script's prereqs instead.
 
-## Modifying the entrypoint
+## Modifying the boot path
 
-`docker/entrypoint.sh` is the most fragile piece. Changes that touch:
+The fragile pieces are `docker/Containerfile` (systemd setup, unit masking), `docker/ninjarmm-bootstrap.{sh,service}` (first-boot agent install), and `docker/in-host` (host-namespace handoff). CI only *builds* the image — it can't boot systemd or talk to a real host — so changes here **must be validated on a real box**, and you should state which in the PR. Test matrix:
 
-- The `nsenter` invocation
-- The volume layout (`/state/...`)
-- The host bind mounts (`/opt/NinjaRMMAgent`)
+- A **TrueNAS SCALE** box (the canonical appliance target: read-only root, ix-apps Docker, ZFS) — confirm the agent registers, **a backup runs (Lockhart)**, and `in-host zpool status` works.
+- A podman host via the quadlet (Bazzite/Fedora) — confirm `--systemd=always` boots and the agent comes up.
 
-…need to be tested on at least:
-
-- An rpm-ostree host (Bazzite is fine — that's the canonical target)
-- A traditional Fedora install (where `/opt` is real, not a symlink to `/var/opt`)
-- A Ubuntu host (different `/etc/os-release`, different SSH key conventions)
-
-Until we have CI integration tests covering all three, **explicitly state which targets you tested in your PR description**.
+Watch for the classic systemd-in-container gotchas: cgroup mount, writable `/run`+`/tmp` tmpfs, and env vars set via the runtime reaching PID 1 but **not** the services it spawns (the bootstrap reads `NINJA_AGENT_URL` from `/proc/1/environ` for exactly this reason).
 
 ## Branching, commits, PRs
 
@@ -129,13 +120,13 @@ Three workflows in `.github/workflows/`:
 
 **Note**: published images don't include a token-stamped RPM. CI stages a zero-byte `agent.rpm` placeholder and the Containerfile's `dnf -y install ... || true` tolerates it, so the published image is agent-free by design.
 
-Agent-free images get their agent at runtime: set `NINJA_AGENT_URL` and the entrypoint downloads + installs it on first run (only if the `ninjarmm-state` volume doesn't already have it). Baking remains supported for local dev — drop a real `./agent.rpm` and `scripts/build.sh` layers it in. Downstream consumers can still layer an RPM via a one-step `FROM` build instead of using the URL.
+Agent-free images get their agent at runtime: set `NINJA_AGENT_URL` and `ninjarmm-bootstrap.service` downloads + installs it on first boot (only if the `ninjarmm-agent` volume doesn't already have it). Baking remains supported for local dev — drop a real `./agent.rpm` and `scripts/build.sh` layers it in. Downstream consumers can still layer an RPM via a one-step `FROM` build instead of using the URL.
 
 ## Versioning specifics
 
 `VERSION` at the repo root is the source of truth. The build scripts and CI both read it. Per [Semantic Versioning](https://kb.dtctoday.com/books/developer-operations-devops/page/semantic-versioning):
 
-- **Major** — breaking changes to the volume layout, the `/state` contract, or the install/uninstall script interface
+- **Major** — breaking changes to the volume layout (`/opt/NinjaRMMAgent`), the init model, or the install/uninstall script interface
 - **Minor** — adding admin tools, new optional environment variables, new helper scripts
 - **Patch** — bug fixes, base image bumps that don't change behavior, doc-only fixes (no bump needed for doc-only)
 
