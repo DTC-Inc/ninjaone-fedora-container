@@ -1,0 +1,49 @@
+#!/bin/bash
+#
+# Run a command inside the HOST's namespaces from within the container.
+#
+# The container runs its own systemd (PID 1), so it does NOT share the host PID
+# namespace -- `nsenter --target 1` would hit the container's own systemd. Instead
+# we enter the host init's namespaces by their files under the bind-mounted host
+# /proc (/host/proc/1/ns/*). This needs the container privileged and host / (incl.
+# /proc) mounted at /host -- both set by the compose file / quadlet.
+#
+# Why: the NinjaOne agent runs in the container, so its built-in tools see the
+# container. Anything that must reflect host reality -- `zpool`/`zfs` (run the
+# host's own version-matched binaries against the host pools), or any other host
+# command -- goes through here. zpool and zfs are symlinks to this script and
+# dispatch on $0, so NinjaOne scripts and the remote terminal "just work".
+#
+# Usage:
+#   in-host zpool status
+#   in-host zfs list -o name,used,avail,health
+#   in-host <any-host-command> [args...]
+
+set -euo pipefail
+
+HOST_PID1=/host/proc/1
+
+if [ ! -e "$HOST_PID1/ns/mnt" ]; then
+    echo "in-host: host namespaces not visible at $HOST_PID1 -- is the container" >&2
+    echo "in-host: privileged with host / (and /proc) mounted at /host?" >&2
+    exit 1
+fi
+
+self="$(basename "$0")"
+if [ "$self" != "in-host" ]; then
+    # Invoked via a symlink (zpool/zfs/...): the link name IS the command.
+    set -- "$self" "$@"
+fi
+
+if [ "$#" -eq 0 ]; then
+    echo "usage: in-host <command> [args...]   (or invoke via a zpool/zfs symlink)" >&2
+    exit 2
+fi
+
+exec nsenter \
+    --mount="$HOST_PID1/ns/mnt" \
+    --uts="$HOST_PID1/ns/uts" \
+    --ipc="$HOST_PID1/ns/ipc" \
+    --net="$HOST_PID1/ns/net" \
+    --pid="$HOST_PID1/ns/pid" \
+    -- "$@"

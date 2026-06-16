@@ -1,0 +1,19 @@
+[Unit]
+Description=NinjaOne agent first-boot install
+Documentation=https://github.com/DTC-Inc/ninjaone-fedora-container
+After=network-online.target
+Wants=network-online.target
+Before=ninjarmm-agent.service
+# Only runs while the agent is absent from the persistent volume.
+ConditionPathExists=!/opt/NinjaRMMAgent/programfiles/ninjarmm-linagent
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+# Quadlet deploys drop the token URL here (0600). compose/Custom-App deploys
+# pass it as a container env var instead; the script reads that from PID 1.
+EnvironmentFile=-/etc/ninjarmm-agent.env
+ExecStart=/usr/local/bin/ninjarmm-bootstrap.sh
+
+[Install]
+WantedBy=multi-user.target

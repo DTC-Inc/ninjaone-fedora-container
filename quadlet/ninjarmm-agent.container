@@ -1,39 +1,44 @@
 [Unit]
-Description=NinjaOne Agent (containerized)
+Description=NinjaOne Agent (systemd-init container)
 After=network-online.target
 Wants=network-online.target
 
 [Container]
 Image=ghcr.io/dtc-inc/ninjaone-fedora-container:latest
-ContainerName=ninjarmm-agent
+
+# container name AND hostname are both the host's real hostname (%H), so the
+# agent reports the box -- not "ninjarmm-agent" -- to NinjaOne.
+ContainerName=%H
 HostName=%H
 Network=host
 
-PodmanArgs=--pid=host --ipc=host --privileged
+# --systemd=always: podman boots the image's systemd as PID 1 and sets up the
+# cgroup + tmpfs /run, /tmp it needs. Privileged for SMART, ZFS handoff, backups.
+PodmanArgs=--systemd=always --privileged
+Environment=container=podman
 
-# NINJA_AGENT_URL: public download link for the token-stamped NinjaOne Linux
-# agent RPM. The entrypoint downloads + installs it on first run, only if no
-# agent is already in the ninjarmm-state volume. Keep the (token-bearing) URL
-# out of git by setting it in /etc/ninjarmm-agent.env; the `-` prefix makes the
-# file optional, so a baked-in-RPM image works with no env file present.
-# scripts/install.sh writes this file for you when NINJA_AGENT_URL is exported.
+# NINJA_AGENT_URL (token-bearing) lives in this 0600 file, written by
+# scripts/install.sh; the bootstrap unit installs the agent on first boot if the
+# ninjarmm-agent volume is empty. The leading `-` keeps it optional.
 EnvironmentFile=-/etc/ninjarmm-agent.env
-Environment=PATCHER_INTERVAL=300
 
-Volume=ninjarmm-state:/state
+# Agent install + state persist in the volume at the canonical path.
+Volume=ninjarmm-agent:/opt/NinjaRMMAgent
 
-Volume=/sys:/sys:ro
+# Hardware visibility (SMART/sensors/inventory).
 Volume=/dev:/dev
 
+# Host handoff: host / (incl. /proc) at /host for the in-host/zpool/zfs wrappers;
+# /mnt through for volume reporting + backups; writable host surfaces.
 Volume=/:/host:ro,rslave
+Volume=/proc:/host/proc:ro,rslave
+Volume=/mnt:/mnt:rw,rslave
 Volume=/etc:/host/etc:rw,rslave
 Volume=/var:/host/var:rw,rslave
-Volume=/home:/host/home:rw,rslave
 
 [Service]
 Restart=always
 TimeoutStartSec=300
-ExecStopPost=-/bin/umount /opt/NinjaRMMAgent
 
 [Install]
 WantedBy=multi-user.target default.target

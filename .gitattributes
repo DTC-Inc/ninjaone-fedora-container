@@ -1,0 +1,10 @@
+# These ship inside a Linux container and are executed there — they MUST be LF,
+# regardless of the contributor's platform (Windows/SeaDrive can introduce CRLF,
+# and a CRLF shebang silently breaks execution). Normalize on commit + checkout.
+*.sh            text eol=lf
+*.service       text eol=lf
+docker/Containerfile  text eol=lf
+docker/in-host  text eol=lf
+quadlet/*       text eol=lf
+compose/*.yml   text eol=lf
+*.yml           text eol=lf
