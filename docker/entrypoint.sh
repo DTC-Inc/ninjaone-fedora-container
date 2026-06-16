@@ -88,9 +88,20 @@ HOST_AGENT_PATH="$HOST_STATE/ninjarmm/app"
 echo "[entrypoint] /state on host: $HOST_STATE"
 echo "[entrypoint] Agent binary on host: $HOST_AGENT_PATH/programfiles/ninjarmm-linagent"
 
+# Make the agent install visible at the canonical /opt/NinjaRMMAgent in the
+# host mount namespace. Creating the mountpoint writes to the host root; on
+# hosts where / is read-only with no writable /opt redirect (TrueNAS SCALE and
+# similar appliances — unlike ostree distros where /opt -> /var/opt is
+# writable) the mkdir fails. In that case overlay /opt with a tmpfs just to
+# hold the bind target. The bind itself is a VFS op and works on a read-only
+# root once the mountpoint exists.
 nsenter -t 1 -m -- bash -c "
     set -e
-    mkdir -p /opt/NinjaRMMAgent
+    if ! mkdir -p /opt/NinjaRMMAgent 2>/dev/null; then
+        echo '[entrypoint] host /opt is read-only; overlaying it with tmpfs for the agent mountpoint.'
+        mountpoint -q /opt || mount -t tmpfs tmpfs /opt
+        mkdir -p /opt/NinjaRMMAgent
+    fi
     mountpoint -q /opt/NinjaRMMAgent || mount --bind '$HOST_AGENT_PATH' /opt/NinjaRMMAgent
 "
 
