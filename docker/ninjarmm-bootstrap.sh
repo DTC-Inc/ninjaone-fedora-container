@@ -60,6 +60,10 @@ if [ ! -x "$AGENT_BIN" ]; then
     exit 1
 fi
 
+# The RPM %post already enabled + started ninjarmm-agent.service. Re-assert
+# enable (idempotent), but start with --no-block: a blocking start from inside
+# this oneshot can wedge the boot. enable --no-reload then a no-block start.
 systemctl daemon-reload
-systemctl enable --now ninjarmm-agent.service
-echo "[bootstrap] agent installed and ninjarmm-agent.service started."
+systemctl enable ninjarmm-agent.service 2>/dev/null || true
+systemctl start --no-block ninjarmm-agent.service || true
+echo "[bootstrap] agent installed; ninjarmm-agent.service enabled and starting."

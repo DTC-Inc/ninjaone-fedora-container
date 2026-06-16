@@ -3,7 +3,11 @@ Description=NinjaOne agent first-boot install
 Documentation=https://github.com/DTC-Inc/ninjaone-fedora-container
 After=network-online.target
 Wants=network-online.target
-Before=ninjarmm-agent.service
+# NOT Before=ninjarmm-agent.service: the agent RPM's %post runs
+# `systemctl start ninjarmm-agent.service` while this oneshot is still running.
+# Ordering this before the agent would make that start wait for us while we wait
+# for it -> deadlock, boot wedged at "starting". Let them be unordered; the %post
+# (and our own non-blocking nudge) brings the agent up.
 # Only runs while the agent is absent from the persistent volume.
 ConditionPathExists=!/opt/NinjaRMMAgent/programfiles/ninjarmm-linagent
 
