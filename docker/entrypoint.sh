@@ -80,22 +80,50 @@ fi
 
 # The agent install ($AGENT_TARGET, inside the persistent volume) has to appear
 # at the canonical /opt/NinjaRMMAgent in the HOST mount namespace, since that's
-# where the agent (run via nsenter) and its self-updater expect it. Reach the
-# volume subtree from the host namespace via the entrypoint's own procfs root:
-# /proc/<pid>/root/<path> follows that process's filesystem view across mount
-# namespaces, so it resolves regardless of WHERE the volume's backing
-# filesystem is mounted on the host. (Relies on --pid=host, already required
-# for `nsenter -t 1` to reach host init.)
+# where the agent (run via nsenter) and its self-updater expect it. To bind it
+# there we need the volume's REAL path in the host namespace.
 #
-# The earlier approach — reading the host path from /proc/self/mountinfo field 4
-# — only worked when the volume's filesystem was mounted at the host root (podman
-# on ostree). On TrueNAS SCALE the Docker volumes live on a separate dataset, so
-# field 4 is a path WITHIN that dataset (/volumes/<name>/_data) that does not
-# exist at that location in the host namespace, and the bind failed with
-# "special device ... does not exist".
-AGENT_PID=$$
-AGENT_SRC="/proc/$AGENT_PID/root$AGENT_TARGET"
-echo "[entrypoint] Binding agent install ($AGENT_TARGET) onto /opt/NinjaRMMAgent in host ns via $AGENT_SRC"
+# Two earlier approaches failed:
+#   - /proc/self/mountinfo field 4 (the mount's root WITHIN its filesystem) is
+#     only a valid host path when that filesystem is mounted at the host root
+#     (podman on ostree). On TrueNAS SCALE the Docker volumes live on a separate
+#     dataset, so field 4 (/volumes/<name>/_data) doesn't exist at that location
+#     in the host ns -> "special device ... does not exist".
+#   - Binding via the entrypoint's /proc/<pid>/root/<path> reads fine across
+#     namespaces but is rejected as a bind SOURCE, because the subtree lives on
+#     a mount that belongs to the container's namespace, not the host's
+#     -> "wrong fs type, bad option, bad superblock".
+#
+# Resolve it properly: the filesystem device id (mountinfo field 3) is global
+# across namespaces, so match /state's device between this container and the
+# host (/proc/1/mountinfo, host init via --pid=host), then translate field 4
+# through the host mount's own root to get the real host-ns path. Binding from
+# that path is an ordinary same-namespace bind the kernel allows.
+read -r STATE_DEV STATE_ROOT < <(awk '$5 == "/state" { print $3, $4; exit }' /proc/self/mountinfo)
+if [ -z "$STATE_DEV" ]; then
+    echo "[entrypoint] FATAL: /state is not a mount; cannot resolve its host path." >&2
+    exit 1
+fi
+HOST_STATE=$(awk -v dev="$STATE_DEV" -v croot="$STATE_ROOT" '
+    $3 == dev {
+        mp = $5; r = $4
+        if (r == "/")                       rel = croot
+        else if (croot == r)                rel = ""
+        else if (index(croot, r "/") == 1)  rel = substr(croot, length(r) + 1)
+        else                                next
+        if (length(r) >= bestlen) { bestlen = length(r); best = mp rel }
+    }
+    END { if (best != "") print best }
+' /proc/1/mountinfo)
+if [ -z "$HOST_STATE" ]; then
+    echo "[entrypoint] FATAL: could not resolve host path for /state (dev=$STATE_DEV root=$STATE_ROOT)." >&2
+    echo "[entrypoint] host mounts on that device:" >&2
+    awk -v dev="$STATE_DEV" '$3 == dev { print "  " $0 }' /proc/1/mountinfo >&2
+    exit 1
+fi
+HOST_AGENT_PATH="$HOST_STATE/ninjarmm/app"
+echo "[entrypoint] /state host path: $HOST_STATE"
+echo "[entrypoint] Binding $HOST_AGENT_PATH onto /opt/NinjaRMMAgent in host ns"
 
 # Creating the /opt/NinjaRMMAgent mountpoint writes to the host root; on hosts
 # where / is read-only with no writable /opt redirect (TrueNAS SCALE and similar
@@ -118,7 +146,7 @@ nsenter -t 1 -m -- bash -c "
         mount -t tmpfs tmpfs /opt
         mkdir -p /opt/NinjaRMMAgent
     fi
-    mountpoint -q /opt/NinjaRMMAgent || mount --bind '$AGENT_SRC' /opt/NinjaRMMAgent
+    mountpoint -q /opt/NinjaRMMAgent || mount --bind '$HOST_AGENT_PATH' /opt/NinjaRMMAgent
 "
 
 (
