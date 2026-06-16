@@ -23,13 +23,16 @@ jobs:
         run: |
           VERSION=$(cat VERSION | tr -d '[:space:]')
           SHORT_SHA=${GITHUB_SHA::7}
-          SLUG=$(echo "${{ github.event.pull_request.head.ref }}" \
+          SLUG=$(printf '%s' "${{ github.event.pull_request.head.ref }}" \
                  | tr '/' '-' \
-                 | tr -c 'a-zA-Z0-9._-' '-')
+                 | tr -c 'a-zA-Z0-9._-' '-' \
+                 | sed 's/^-*//; s/-*$//')
+          IMAGE=$(printf '%s' "${REGISTRY}/${IMAGE_NAME}" | tr '[:upper:]' '[:lower:]')
           {
             echo "version=${VERSION}"
             echo "short_sha=${SHORT_SHA}"
             echo "slug=${SLUG}"
+            echo "image=${IMAGE}"
           } >> "$GITHUB_OUTPUT"
 
       # The published image is a no-agent base. The Containerfile expects an
@@ -60,8 +63,8 @@ jobs:
           platforms: linux/amd64
           push: true
           tags: |
-            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.vars.outputs.version }}-${{ steps.vars.outputs.slug }}-${{ steps.vars.outputs.short_sha }}
-            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.vars.outputs.version }}-${{ steps.vars.outputs.slug }}
+            ${{ steps.vars.outputs.image }}:${{ steps.vars.outputs.version }}-${{ steps.vars.outputs.slug }}-${{ steps.vars.outputs.short_sha }}
+            ${{ steps.vars.outputs.image }}:${{ steps.vars.outputs.version }}-${{ steps.vars.outputs.slug }}
           labels: |
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
             org.opencontainers.image.revision=${{ github.event.pull_request.head.sha }}

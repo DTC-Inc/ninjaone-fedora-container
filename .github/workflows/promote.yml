@@ -23,12 +23,15 @@ jobs:
         id: vars
         run: |
           VERSION=$(cat VERSION | tr -d '[:space:]')
-          SLUG=$(echo "${{ github.event.pull_request.head.ref }}" \
+          SLUG=$(printf '%s' "${{ github.event.pull_request.head.ref }}" \
                  | tr '/' '-' \
-                 | tr -c 'a-zA-Z0-9._-' '-')
+                 | tr -c 'a-zA-Z0-9._-' '-' \
+                 | sed 's/^-*//; s/-*$//')
+          IMAGE=$(printf '%s' "${REGISTRY}/${IMAGE_NAME}" | tr '[:upper:]' '[:lower:]')
           {
             echo "version=${VERSION}"
             echo "slug=${SLUG}"
+            echo "image=${IMAGE}"
             echo "base_ref=${{ github.event.pull_request.base.ref }}"
           } >> "$GITHUB_OUTPUT"
 
@@ -43,18 +46,18 @@ jobs:
       - name: Retag for development merges
         if: steps.vars.outputs.base_ref == 'development'
         run: |
-          SRC="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.vars.outputs.version }}-${{ steps.vars.outputs.slug }}"
+          SRC="${{ steps.vars.outputs.image }}:${{ steps.vars.outputs.version }}-${{ steps.vars.outputs.slug }}"
           docker buildx imagetools create \
-            --tag "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:dev" \
-            --tag "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.vars.outputs.version }}-dev" \
+            --tag "${{ steps.vars.outputs.image }}:dev" \
+            --tag "${{ steps.vars.outputs.image }}:${{ steps.vars.outputs.version }}-dev" \
             "$SRC"
 
       - name: Retag for release merges
         if: steps.vars.outputs.base_ref == 'release'
         run: |
-          SRC="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.vars.outputs.version }}-${{ steps.vars.outputs.slug }}"
+          SRC="${{ steps.vars.outputs.image }}:${{ steps.vars.outputs.version }}-${{ steps.vars.outputs.slug }}"
           docker buildx imagetools create \
-            --tag "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.vars.outputs.version }}" \
-            --tag "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:release" \
-            --tag "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest" \
+            --tag "${{ steps.vars.outputs.image }}:${{ steps.vars.outputs.version }}" \
+            --tag "${{ steps.vars.outputs.image }}:release" \
+            --tag "${{ steps.vars.outputs.image }}:latest" \
             "$SRC"
