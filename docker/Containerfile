@@ -38,7 +38,19 @@ RUN systemctl set-default multi-user.target \
         systemd-remount-fs.service \
         dev-hugepages.mount \
         sys-fs-fuse-connections.mount \
-        sys-kernel-config.mount
+        sys-kernel-config.mount \
+        systemd-journald-audit.socket
+
+# Disable the kernel audit netlink for journald and dbus-broker. The host's
+# auditd owns the single audit socket, so a container opening it fails with
+# EUNATCH ("Protocol driver not attached", errno 49) -- which kills journald
+# (no logs, system degraded) and dbus-broker (no D-Bus -> the agent's RPM
+# post-install can't register ninjarmm-agent.service). Neither needs audit here.
+RUN mkdir -p /etc/systemd/journald.conf.d /etc/systemd/system/dbus-broker.service.d \
+    && printf '[Journal]\nAudit=no\n' \
+        > /etc/systemd/journald.conf.d/10-no-audit.conf \
+    && printf '[Service]\nExecStart=\nExecStart=/usr/bin/dbus-broker-launch --scope system\n' \
+        > /etc/systemd/system/dbus-broker.service.d/10-no-audit.conf
 
 # First-boot bootstrap: downloads + installs the token-stamped agent RPM if the
 # persistent /opt/NinjaRMMAgent volume is empty, then enables the agent service.
