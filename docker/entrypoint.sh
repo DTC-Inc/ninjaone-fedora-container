@@ -95,11 +95,19 @@ echo "[entrypoint] Agent binary on host: $HOST_AGENT_PATH/programfiles/ninjarmm-
 # writable) the mkdir fails. In that case overlay /opt with a tmpfs just to
 # hold the bind target. The bind itself is a VFS op and works on a read-only
 # root once the mountpoint exists.
+#
+# Mount the tmpfs unconditionally once the mkdir has proven /opt is read-only:
+# on these appliances /opt is itself already a (read-only) mountpoint, so a
+# `mountpoint -q /opt` guard would see it mounted and wrongly skip the overlay,
+# leaving the next mkdir to fail on the still-read-only filesystem. The tmpfs
+# stacks over the read-only mount and shadows it; agent data still persists in
+# the named volume via the bind below. Restart is idempotent — once the tmpfs
+# is in place the first mkdir succeeds, so the overlay never double-stacks.
 nsenter -t 1 -m -- bash -c "
     set -e
     if ! mkdir -p /opt/NinjaRMMAgent 2>/dev/null; then
         echo '[entrypoint] host /opt is read-only; overlaying it with tmpfs for the agent mountpoint.'
-        mountpoint -q /opt || mount -t tmpfs tmpfs /opt
+        mount -t tmpfs tmpfs /opt
         mkdir -p /opt/NinjaRMMAgent
     fi
     mountpoint -q /opt/NinjaRMMAgent || mount --bind '$HOST_AGENT_PATH' /opt/NinjaRMMAgent
