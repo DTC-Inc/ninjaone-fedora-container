@@ -28,11 +28,13 @@ jobs:
           VERSION="${TAG#v}"
           MAJOR="${VERSION%%.*}"
           MINOR="${VERSION%.*}"
+          IMAGE=$(printf '%s' "${REGISTRY}/${IMAGE_NAME}" | tr '[:upper:]' '[:lower:]')
           {
             echo "tag=${TAG}"
             echo "version=${VERSION}"
             echo "major=${MAJOR}"
             echo "minor=${MINOR}"
+            echo "image=${IMAGE}"
           } >> "$GITHUB_OUTPUT"
 
       - name: Stage no-agent build context
@@ -59,11 +61,11 @@ jobs:
           platforms: linux/amd64
           push: true
           tags: |
-            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.vars.outputs.version }}
-            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.vars.outputs.minor }}
-            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.vars.outputs.major }}
-            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest
-            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:release
+            ${{ steps.vars.outputs.image }}:${{ steps.vars.outputs.version }}
+            ${{ steps.vars.outputs.image }}:${{ steps.vars.outputs.minor }}
+            ${{ steps.vars.outputs.image }}:${{ steps.vars.outputs.major }}
+            ${{ steps.vars.outputs.image }}:latest
+            ${{ steps.vars.outputs.image }}:release
           labels: |
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
             org.opencontainers.image.revision=${{ github.sha }}
@@ -78,7 +80,7 @@ jobs:
           generate_release_notes: true
           body: |
             Container image:
-            - `ghcr.io/${{ github.repository }}:${{ steps.vars.outputs.version }}` (pinned)
-            - `ghcr.io/${{ github.repository }}:${{ steps.vars.outputs.minor }}` (rolling within minor)
-            - `ghcr.io/${{ github.repository }}:${{ steps.vars.outputs.major }}` (rolling within major)
-            - `ghcr.io/${{ github.repository }}:latest` (rolling — not for production)
+            - `${{ steps.vars.outputs.image }}:${{ steps.vars.outputs.version }}` (pinned)
+            - `${{ steps.vars.outputs.image }}:${{ steps.vars.outputs.minor }}` (rolling within minor)
+            - `${{ steps.vars.outputs.image }}:${{ steps.vars.outputs.major }}` (rolling within major)
+            - `${{ steps.vars.outputs.image }}:latest` (rolling — not for production)
