@@ -10,6 +10,13 @@ services:
     hostname: ${NINJA_HOSTNAME:-ninjarmm-agent}
     restart: always
 
+    # Host networking, matching the podman quadlet's Network=host: the agent
+    # reports the host's real interfaces/IPs and checks in over the host stack,
+    # and there's no container-side DNS to misconfigure (the image masks
+    # systemd-resolved so name resolution defers to the host). On TrueNAS SCALE,
+    # set the Custom App's network mode to "Host".
+    network_mode: host
+
     # systemd runs as PID 1 inside the container so the agent installs and
     # supervises its own services -- ninjarmm-agent, the patcher timer, and the
     # Lockhart backup daemon (com.ninjarmm.lockhartd.service). SIGRTMIN+3 is
@@ -46,17 +53,19 @@ services:
       # Hardware visibility for SMART / sensors / inventory.
       - /dev:/dev
 
-      # Host filesystem handoff. Host / (incl. /proc) mounted read-only at /host
-      # lets the in-host / zpool / zfs wrappers nsenter into the host and run the
-      # host's own version-matched tools against the real pools. /mnt is mounted
-      # through so the agent reports host volume capacity and Lockhart can back
-      # up the datasets. /host/etc + /host/var are writable for host-touching
-      # scripts.
-      - /:/host:ro,rslave
+      # FULL host access, established only while the container runs (nothing is
+      # written to the host; it's gone on uninstall). Host / is bind-mounted
+      # READ-WRITE at /host, recursively (rslave: host mounts propagate in,
+      # container mounts never leak back). This lets the remote terminal, in-host,
+      # scripts, the NinjaOne file browser, AND Lockhart back up / modify the whole
+      # host -- target any host path as /host/<path>. On ostree/atomic hosts
+      # /host/usr stays read-only because it is read-only on the host itself.
+      # /proc is pinned read-only at /host/proc for the in-host handoff
+      # (/host/proc/1/ns/*). /mnt is also exposed at the same path so TrueNAS
+      # backup jobs can target /mnt/<pool>/<dataset> like a bare-metal agent.
+      - /:/host:rw,rslave
       - /proc:/host/proc:ro,rslave
       - /mnt:/mnt:rw,rslave
-      - /etc:/host/etc:rw,rslave
-      - /var:/host/var:rw,rslave
 
 volumes:
   ninjarmm-agent:

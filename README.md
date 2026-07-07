@@ -7,10 +7,10 @@ The container runs its own **systemd as PID 1**, so the NinjaOne agent installs 
 | Aspect | Behavior |
 |---|---|
 | RMM presence, scripting, patching | Full — agent + patcher run as native systemd services |
-| **Backups (Lockhart / LTDR)** | **Work** — `lockhartd` runs under the container's systemd |
+| **Backups (Lockhart / LTDR)** | **Work** — `lockhartd` runs under the container's systemd; can target **any host path** under `/host` |
 | SMART / physical disk health | Host drives — `smartctl` reads `/dev` directly (privileged) |
 | ZFS pools (`zpool`, `zfs`) | Host pools, version-matched — wrappers run the host's own binaries |
-| Filesystem capacity | Host datasets mounted through at `/mnt` are reported as volumes |
+| Filesystem capacity | Whole host is mounted **read-write** at `/host` (plus `/mnt`); the agent reports mounted volumes and can browse/back up any host path |
 | Hostname / container name | Both set to the host's real hostname (`%H`) |
 | OS reported | The container (Fedora) — see [Reporting trade-offs](#reporting-trade-offs) |
 | Agent state / self-update | Persisted in the `ninjarmm-agent` named volume at `/opt/NinjaRMMAgent` |
@@ -76,7 +76,7 @@ The agent installs only on first boot; once it's in the `ninjarmm-agent` volume,
 │   │  /opt/NinjaRMMAgent  ◄── ninjarmm-agent volume (install + state) │ │              │
 │   │  /dev  ◄────────────────── SMART reads drives directly ──────────┼─┘              │
 │   │  /mnt  ◄────────────────── host datasets (df reporting + backup) │                │
-│   │  /host (+ /host/proc) ◄─── host / read-only                      │                │
+│   │  /host (+ /host/proc) ◄─── host / read-write                     │                │
 │   │     └─ in-host / zpool / zfs  ─► nsenter into /host/proc/1/ns/*   │                │
 │   │        run the HOST's own tools (version-matched ZFS) ───────────┼──► host pools  │
 │   └──────────────────────────────────────────────────────────────────┘              │
@@ -87,7 +87,8 @@ The agent installs only on first boot; once it's in the `ninjarmm-agent` volume,
 Key points:
 
 - **systemd is PID 1.** The agent's RPM installs `ninjarmm-agent.service`, the patcher timer, and (on policy) the Lockhart backup daemon. The container's own systemd supervises them — so backups run. The container is **not** `--pid=host` (systemd must be PID 1).
-- **The agent runs in the container's namespace.** A plain volume at `/opt/NinjaRMMAgent` is its persistent install + identity store — no bind/nsenter handoff for the agent itself.
+- **The agent runs in the container's namespace.** The `/opt/NinjaRMMAgent` volume persists its files, identity, and self-updates. Its systemd units, though, live in the container's ephemeral rootfs — so `ninjarmm-bootstrap` caches the RPM in the volume and re-lays the units on every boot the agent unit is missing (no re-download); the agent re-attaches as the same device and re-creates the Lockhart unit itself.
+- **The host filesystem is mounted read-write at `/host`.** Full host access, established only while the container runs — nothing is persisted on the host and it's gone on uninstall. This is what lets the NinjaOne file browser and Lockhart backups reach and back up **any** host path (`/host/<path>`, or `/mnt/<pool>` on TrueNAS). `/host/proc` stays read-only for the handoff below.
 - **Host introspection is on demand.** `in-host <cmd>` enters the host's namespaces via the bind-mounted host `/proc` (`/host/proc/1/ns/*`) and runs the host's own binary. `zpool` and `zfs` are symlinks to it, so NinjaOne scripts and the remote terminal get real, version-matched ZFS against the host pools without installing a (mismatched) zfs userland in the container.
 - **SMART** works because `smartctl` reads the block devices in `/dev` directly — that's device-level, namespace-independent.
 
@@ -111,13 +112,20 @@ Running the agent in the container (required for backups) changes a few reported
 | Container path | Host path | Mode |
 |---|---|---|
 | `/opt/NinjaRMMAgent` | `ninjarmm-agent` volume | read-write (agent install + state) |
-| `/mnt` | `/mnt` | read-write (host datasets) |
-| `/host` | `/` | read-only baseline |
+| `/host` | `/` | **read-write — the entire host, incl. for the file browser + backups** |
 | `/host/proc` | `/proc` | read-only (namespace handoff source) |
-| `/host/etc`, `/host/var` | `/etc`, `/var` | read-write |
+| `/mnt` | `/mnt` | read-write (TrueNAS-native path for pool datasets) |
 | `/dev` | `/dev` | shared (privileged) |
 
-Run any host command with `in-host <cmd>` (e.g. `in-host zpool status`, `in-host systemctl restart sshd`). `zpool`/`zfs` work bare.
+Host `/` is bind-mounted read-write at `/host`, established only while the container runs — nothing is written to the host to set it up and it's gone on uninstall. So `/host/etc`, `/host/var`, `/host/home`, etc. are all reachable and writable (on an ostree/atomic host `/host/usr` stays read-only because it is read-only on the host itself). Run any host command with `in-host <cmd>` (e.g. `in-host zpool status`, `in-host systemctl restart sshd`); `zpool`/`zfs` work bare.
+
+### Backing up host data
+
+Because the whole host is visible at `/host`, NinjaOne's file/folder backup (Lockhart) and the file browser can target **any host path** — configure a backup of `/host/etc`, `/host/home/<user>`, `/host/srv`, or on TrueNAS `/mnt/<pool>/<dataset>`. Recommended exclusions so a broad job doesn't crawl pseudo-filesystems or the container's own storage:
+
+- `/host/proc`, `/host/sys`, `/host/dev`, `/host/run` — kernel / pseudo filesystems
+- `/host/var/lib/containers` — the container store (includes this container and the `ninjarmm-agent` volume)
+- any network / loop mounts you don't intend to capture
 
 ## Uninstall
 

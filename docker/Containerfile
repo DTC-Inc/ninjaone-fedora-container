@@ -1,4 +1,4 @@
-ARG FEDORA_VERSION=41
+ARG FEDORA_VERSION=42
 FROM registry.fedoraproject.org/fedora:${FEDORA_VERSION}
 
 LABEL org.opencontainers.image.source="https://github.com/DTC-Inc/ninjaone-fedora-container"
@@ -28,7 +28,13 @@ RUN dnf -y install \
     && rm -rf /var/cache/dnf
 
 # systemd-in-container hygiene: mask units that need real hardware or a console
-# and would only fail/slow the boot. The agent + backup services are unaffected.
+# and would only fail/slow the boot. Also mask systemd-networkd + systemd-resolved:
+# the container uses the host's network namespace (Network=host), so it must NOT
+# run its own network manager or DNS resolver. A container-side resolved collides
+# with the host's on 127.0.0.53 (shared loopback) and breaks name resolution --
+# which kills the agent download and check-in. With no resolved running, the
+# container's /etc/resolv.conf (podman points it at the host's) resolves via the
+# host. The agent + backup services are unaffected.
 RUN systemctl set-default multi-user.target \
     && systemctl mask \
         getty.target \
@@ -39,7 +45,10 @@ RUN systemctl set-default multi-user.target \
         dev-hugepages.mount \
         sys-fs-fuse-connections.mount \
         sys-kernel-config.mount \
-        systemd-journald-audit.socket
+        systemd-journald-audit.socket \
+        systemd-networkd.service \
+        systemd-networkd.socket \
+        systemd-resolved.service
 
 # Disable the kernel audit netlink for journald and dbus-broker. The host's
 # auditd owns the single audit socket, so a container opening it fails with
