@@ -2,10 +2,10 @@ services:
   ninjarmm-agent:
     image: ghcr.io/dtc-inc/ninjaone-fedora-container:latest
 
-    # container_name AND hostname are both the HOST's real hostname, so the agent
-    # checks into NinjaOne as the box (e.g. trh-lib-vault001), not "ninjarmm-agent".
-    # On TrueNAS set the Custom App's hostname to the box name; for plain compose,
-    # export NINJA_HOSTNAME=$(hostname) (scripts/install.sh does this for you).
+    # The agent auto-detects the host's hostname at boot (ninjarmm-hostname.service
+    # mirrors /host/etc/hostname), so it checks into NinjaOne as the box on any
+    # host -- NINJA_HOSTNAME is OPTIONAL. If set it also names the docker container
+    # (nicer `docker ps`); otherwise the container is just "ninjarmm-agent".
     container_name: ${NINJA_HOSTNAME:-ninjarmm-agent}
     hostname: ${NINJA_HOSTNAME:-ninjarmm-agent}
     restart: always
@@ -61,11 +61,10 @@ services:
       # host -- target any host path as /host/<path>. On ostree/atomic hosts
       # /host/usr stays read-only because it is read-only on the host itself.
       # /proc is pinned read-only at /host/proc for the in-host handoff
-      # (/host/proc/1/ns/*). /mnt is also exposed at the same path so TrueNAS
-      # backup jobs can target /mnt/<pool>/<dataset> like a bare-metal agent.
+      # (/host/proc/1/ns/*). Back up any host path -- including pools -- under
+      # /host (e.g. /host/mnt/<pool>/<dataset>).
       - /:/host:rw,rslave
       - /proc:/host/proc:ro,rslave
-      - /mnt:/mnt:rw,rslave
 
       # Report the HOST's OS to NinjaOne, not the container's Fedora. The agent
       # reads /etc/os-release verbatim; mounting the host's over the container's
