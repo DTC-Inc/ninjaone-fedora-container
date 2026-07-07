@@ -43,6 +43,8 @@ These are easy to break and hard to debug — call them out in any review:
    - Quadlet's `EnvironmentFile=` maps to podman `--env-file`, which does **not** honor systemd's `-` optional prefix and **requires the file to exist**. `install.sh` always creates `/etc/ninjarmm-agent.env` (empty if no URL). No leading `-`.
    - Bootstrap's `ConditionPathExists=!/usr/lib/systemd/system/ninjarmm-agent.service` (the unit, not the binary) is what makes it re-run on each fresh container and skip once wired.
 
+9. **Lockhart (backups) needs `OPENSSL_CONF=/dev/null`.** The LTDR backup daemon's bundled OpenSSL (`nssl`) can't parse Fedora's system `openssl.cnf` (crypto-policies directives like `rh-allow-sha1-signatures`) and dies on startup → it never binds `:50052` → the agent loops "Failed to configure backup agent … Connection refused" and **backups never run**. A drop-in baked into the image (`/etc/systemd/system/com.ninjarmm.lockhartd.service.d/10-openssl-conf.conf`) sets it. Don't remove it — this is the whole reason backups work in the Fedora container.
+
 ## Where things live
 
 | What | Where |

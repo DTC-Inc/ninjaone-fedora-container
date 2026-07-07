@@ -61,6 +61,18 @@ RUN mkdir -p /etc/systemd/journald.conf.d /etc/systemd/system/dbus-broker.servic
     && printf '[Service]\nExecStart=\nExecStart=/usr/bin/dbus-broker-launch --scope system\n' \
         > /etc/systemd/system/dbus-broker.service.d/10-no-audit.conf
 
+# Lockhart (the LTDR backup daemon the agent installs at runtime) ships its own
+# OpenSSL (nssl), which reads the system /etc/ssl/openssl.cnf at startup. Fedora's
+# config pulls in crypto-policies options (e.g. rh-allow-sha1-signatures) that this
+# OpenSSL build rejects as an "unknown option" -> the daemon dies on startup and
+# never binds its gRPC port 50052, so backups never start (the agent logs
+# "Failed to configure backup agent ... 127.0.0.1:50052: Connection refused").
+# Point Lockhart's OpenSSL at an empty config via a drop-in on its unit; drop-ins
+# match by unit name, so this applies whenever the agent lays the unit down.
+RUN mkdir -p /etc/systemd/system/com.ninjarmm.lockhartd.service.d \
+    && printf '[Service]\nEnvironment=OPENSSL_CONF=/dev/null\n' \
+        > /etc/systemd/system/com.ninjarmm.lockhartd.service.d/10-openssl-conf.conf
+
 # First-boot bootstrap: downloads + installs the token-stamped agent RPM if the
 # persistent /opt/NinjaRMMAgent volume is empty, then enables the agent service.
 COPY ninjarmm-bootstrap.sh /usr/local/bin/ninjarmm-bootstrap.sh
