@@ -82,6 +82,27 @@ RUN mkdir -p /etc/systemd/system/com.ninjarmm.lockhartd.service.d \
 RUN mkdir -p /etc/dnf/vars \
     && . /etc/os-release && printf '%s\n' "$VERSION_ID" > /etc/dnf/vars/releasever
 
+# Report the box's real hostname (not the container id or a manually-set
+# NINJA_HOSTNAME). A oneshot mirrors the host's hostname into the container at
+# boot, before the agent. The container's UTS namespace is separate from the
+# host's, so this sets only the CONTAINER's hostname -- it cannot rename the host.
+# Source: the host's hostname via the bind-mounted host / at /host.
+RUN printf '%s\n' '#!/bin/sh' \
+        'h=$(cat /host/etc/hostname 2>/dev/null | tr -d "[:space:]")' \
+        '[ -n "$h" ] || h=$(cat /host/proc/sys/kernel/hostname 2>/dev/null | tr -d "[:space:]")' \
+        '[ -n "$h" ] && exec hostname "$h"' \
+        > /usr/local/bin/ninjarmm-set-hostname \
+    && chmod 0755 /usr/local/bin/ninjarmm-set-hostname \
+    && printf '%s\n' \
+        '[Unit]' \
+        'Description=Report the host hostname to NinjaOne' \
+        'Before=ninjarmm-bootstrap.service ninjarmm-agent.service' \
+        '' '[Service]' 'Type=oneshot' 'RemainAfterExit=yes' \
+        'ExecStart=/usr/local/bin/ninjarmm-set-hostname' \
+        '' '[Install]' 'WantedBy=multi-user.target' \
+        > /etc/systemd/system/ninjarmm-hostname.service \
+    && systemctl enable ninjarmm-hostname.service
+
 # First-boot bootstrap: downloads + installs the token-stamped agent RPM if the
 # persistent /opt/NinjaRMMAgent volume is empty, then enables the agent service.
 COPY ninjarmm-bootstrap.sh /usr/local/bin/ninjarmm-bootstrap.sh
