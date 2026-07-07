@@ -47,11 +47,6 @@ Volume=/:/host:rw,rslave
 # propagation of the / bind above.
 Volume=/proc:/host/proc:ro,rslave
 
-# TrueNAS-native convenience: pools live under /mnt there, so exposing /mnt at the
-# same path lets backup jobs target /mnt/<pool>/<dataset> exactly like a bare-metal
-# agent (the same data is also reachable at /host/mnt on any host).
-Volume=/mnt:/mnt:rw,rslave
-
 # Report the HOST's OS to NinjaOne, not the container's Fedora. The agent reads
 # /etc/os-release verbatim (that's where "Fedora Linux 42" comes from); mounting
 # the host's over the container's makes the device show up as its real OS
