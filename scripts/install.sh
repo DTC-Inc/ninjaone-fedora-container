@@ -29,36 +29,47 @@ QUADLET_DIR="/etc/containers/systemd"
 QUADLET_FILE="$QUADLET_DIR/ninjarmm-agent.container"
 AGENT_ENV_FILE="/etc/ninjarmm-agent.env"
 
-if [ ! -d "$QUADLET_DIR" ]; then
-    echo "FATAL: $QUADLET_DIR does not exist. Podman quadlet support requires podman >= 4.4." >&2
-    exit 1
-fi
+# Podman >= 4.4 ships the quadlet generator; the drop-in dir may not exist yet on
+# a fresh host, so create it rather than failing.
+mkdir -p "$QUADLET_DIR"
 
-# Build locally if image starts with localhost/ and we have a fresh RPM.
+# localhost/* -> build the image here. An agent-free build is fine: the agent
+# installs on first boot from NINJA_AGENT_URL (drop ./agent.rpm to bake one in).
+# Anything else is pulled from a registry.
 if [[ "$IMAGE" == localhost/* ]]; then
-    if [ -f "$REPO_ROOT/agent.rpm" ]; then
-        echo "Building local image..."
-        BUILDER=podman IMAGE="$IMAGE" "$REPO_ROOT/scripts/build.sh"
-    else
-        if ! podman image exists "$IMAGE"; then
-            echo "FATAL: $IMAGE not present and ./agent.rpm not available to build it." >&2
-            exit 1
-        fi
-    fi
+    echo "Building local image ($IMAGE)..."
+    BUILDER=podman IMAGE="$IMAGE" "$REPO_ROOT/scripts/build.sh"
 else
     echo "Pulling $IMAGE..."
     podman pull "$IMAGE"
 fi
 
-# Persist the agent download URL for the quadlet's EnvironmentFile. The URL
-# carries a NinjaOne org token, so keep it 0600 and out of the world-readable
-# quadlet. Leaving NINJA_AGENT_URL unset preserves any existing env file (e.g.
-# a baked-in-RPM image needs none).
+# Persist the agent download URL for the quadlet's EnvironmentFile (podman
+# --env-file). The URL carries a NinjaOne org token, so keep it 0600 and out of
+# the world-readable quadlet. podman --env-file REQUIRES the file to exist even
+# when empty, so always ensure it's there:
+#   - URL provided       -> write it (overwrites any stale value)
+#   - URL unset + file    -> leave it (preserves a URL from a previous run)
+#   - URL unset + no file -> empty 0600 placeholder so the container still boots
+#                            (baked-RPM image, or a boot before the token is set)
+umask 077
 if [ -n "$NINJA_AGENT_URL" ]; then
     echo "Writing $AGENT_ENV_FILE..."
-    umask 077
     printf 'NINJA_AGENT_URL=%s\n' "$NINJA_AGENT_URL" > "$AGENT_ENV_FILE"
     chmod 0600 "$AGENT_ENV_FILE"
+elif [ ! -f "$AGENT_ENV_FILE" ]; then
+    : > "$AGENT_ENV_FILE"
+    chmod 0600 "$AGENT_ENV_FILE"
+fi
+
+# Guardrail: if nothing supplies an agent (no URL now, none baked, none stored in
+# the env file) the container still boots but first-boot install has nothing to
+# fetch. Warn loudly; don't fail (re-run with NINJA_AGENT_URL later still works).
+if [ -z "$NINJA_AGENT_URL" ] && [ ! -f "$REPO_ROOT/agent.rpm" ] \
+   && ! grep -q '^NINJA_AGENT_URL=.' "$AGENT_ENV_FILE" 2>/dev/null; then
+    echo "WARNING: no NINJA_AGENT_URL, no ./agent.rpm, and no URL in $AGENT_ENV_FILE." >&2
+    echo "         The container will boot but first-boot agent install will FAIL." >&2
+    echo "         Re-run with: sudo NINJA_AGENT_URL='https://<console>/...agent.rpm' $0" >&2
 fi
 
 # Generate the quadlet with the resolved image baked in.
@@ -67,12 +78,18 @@ chmod 0644 "$QUADLET_FILE"
 
 systemctl daemon-reload
 systemctl reset-failed ninjarmm-agent.service 2>/dev/null || true
-systemctl start ninjarmm-agent.service
+# restart (not start) so re-running install.sh after an image rebuild or quadlet
+# change actually recreates the container -- `start` is a no-op if it's already
+# active, and would silently keep the old image.
+systemctl restart ninjarmm-agent.service
 
 sleep 4
 systemctl --no-pager --lines=0 status ninjarmm-agent.service || true
 
 echo
+# The container name equals the host's hostname (quadlet ContainerName=%H).
+CNAME="$(hostname)"
 echo "Installed. Tail logs with:    journalctl -u ninjarmm-agent.service -f"
-echo "Container logs:               podman logs -f ninjarmm-agent"
-echo "Shell into container:         podman exec -it ninjarmm-agent bash"
+echo "Container logs:               podman logs -f $CNAME"
+echo "Shell into container:         podman exec -it $CNAME bash"
+echo "Agent + backup services:      podman exec -it $CNAME systemctl status ninjarmm-agent.service com.ninjarmm.lockhartd.service"

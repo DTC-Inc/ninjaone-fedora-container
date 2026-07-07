@@ -40,10 +40,22 @@ if [ "$#" -eq 0 ]; then
     exit 2
 fi
 
+# Enter the host's mount/uts/ipc/net namespaces -- deliberately NOT its pid
+# namespace. The container has its own pid namespace (systemd is PID 1 here) and
+# the host's is an ANCESTOR; the kernel forbids setns() into an ancestor pid
+# namespace, so `--pid` fails with EINVAL ("reassociate to namespace 'ns/pid'
+# failed: Invalid argument"). The mount namespace is the one that matters anyway:
+# it gives the host's own binaries, filesystem, /dev/zfs (zpool/zfs), and the
+# host D-Bus socket.
+#
+# SYSTEMCTL_FORCE_BUS=1: as root, systemctl prefers systemd's private socket
+# (/run/systemd/private), whose handshake needs the host pid-ns alignment we lack
+# -> "Failed to connect to system scope bus". Forcing the D-Bus message bus
+# (reachable through the host ns) makes `in-host systemctl ...` work. Non-systemctl
+# commands ignore the variable.
 exec nsenter \
     --mount="$HOST_PID1/ns/mnt" \
     --uts="$HOST_PID1/ns/uts" \
     --ipc="$HOST_PID1/ns/ipc" \
     --net="$HOST_PID1/ns/net" \
-    --pid="$HOST_PID1/ns/pid" \
-    -- "$@"
+    -- env SYSTEMCTL_FORCE_BUS=1 "$@"

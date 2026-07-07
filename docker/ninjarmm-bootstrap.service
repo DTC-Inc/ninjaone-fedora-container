@@ -3,9 +3,19 @@ Description=NinjaOne agent first-boot install
 Documentation=https://github.com/DTC-Inc/ninjaone-fedora-container
 After=network-online.target
 Wants=network-online.target
-Before=ninjarmm-agent.service
-# Only runs while the agent is absent from the persistent volume.
-ConditionPathExists=!/opt/NinjaRMMAgent/programfiles/ninjarmm-linagent
+# Intentionally NOT ordered Before=ninjarmm-agent.service. The vendor RPM's %post
+# scriptlet starts the agent itself with a BLOCKING `systemctl start
+# ninjarmm-agent.service`. If this oneshot were ordered before that unit, %post
+# would deadlock: systemd holds the agent's start job until this unit finishes,
+# but this unit can't finish until %post (running inside our dnf install) returns,
+# which needs that very start. Without the ordering, %post's start succeeds, the
+# install completes, and the agent comes up.
+#
+# Runs whenever the agent's systemd unit is absent from THIS container. The unit
+# lives in the container's ephemeral rootfs (not the /opt/NinjaRMMAgent volume),
+# so every freshly (re)created container needs it re-laid -- the bootstrap does so
+# from the volume-cached RPM without re-downloading. Skips once wired.
+ConditionPathExists=!/usr/lib/systemd/system/ninjarmm-agent.service
 
 [Service]
 Type=oneshot

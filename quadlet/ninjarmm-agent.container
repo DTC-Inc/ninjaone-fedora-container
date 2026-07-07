@@ -19,8 +19,12 @@ Environment=container=podman
 
 # NINJA_AGENT_URL (token-bearing) lives in this 0600 file, written by
 # scripts/install.sh; the bootstrap unit installs the agent on first boot if the
-# ninjarmm-agent volume is empty. The leading `-` keeps it optional.
-EnvironmentFile=-/etc/ninjarmm-agent.env
+# ninjarmm-agent volume is empty. Quadlet maps this to podman `--env-file`, which
+# (a) does NOT honor systemd's `-` optional prefix -- a leading `-` gets treated
+# as a literal relative path and resolved against /etc/containers/systemd/ -- and
+# (b) requires the file to exist. So: no `-`, and install.sh always creates the
+# file (empty if there's no URL yet).
+EnvironmentFile=/etc/ninjarmm-agent.env
 
 # Agent install + state persist in the volume at the canonical path.
 Volume=ninjarmm-agent:/opt/NinjaRMMAgent
@@ -28,13 +32,25 @@ Volume=ninjarmm-agent:/opt/NinjaRMMAgent
 # Hardware visibility (SMART/sensors/inventory).
 Volume=/dev:/dev
 
-# Host handoff: host / (incl. /proc) at /host for the in-host/zpool/zfs wrappers;
-# /mnt through for volume reporting + backups; writable host surfaces.
-Volume=/:/host:ro,rslave
+# FULL host access, established only while the container runs -- nothing is written
+# to the host to set this up, and it's gone on uninstall. Host / is bind-mounted
+# READ-WRITE at /host, recursively (rslave: host mounts propagate in; container
+# mounts never leak back out). This is what lets the remote terminal, in-host,
+# scripts, the NinjaOne file browser, AND Lockhart backups read and modify the
+# entire host tree -- back up any host path as /host/<path>. On an ostree/atomic
+# host /host/usr stays read-only because it is read-only on the host itself;
+# everything the host root can write, the container can too.
+Volume=/:/host:rw,rslave
+
+# Host /proc pinned read-only at /host/proc for the in-host namespace handoff
+# (/host/proc/1/ns/*). Explicit so the handoff never relies on the recursive
+# propagation of the / bind above.
 Volume=/proc:/host/proc:ro,rslave
+
+# TrueNAS-native convenience: pools live under /mnt there, so exposing /mnt at the
+# same path lets backup jobs target /mnt/<pool>/<dataset> exactly like a bare-metal
+# agent (the same data is also reachable at /host/mnt on any host).
 Volume=/mnt:/mnt:rw,rslave
-Volume=/etc:/host/etc:rw,rslave
-Volume=/var:/host/var:rw,rslave
 
 [Service]
 Restart=always
