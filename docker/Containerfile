@@ -73,6 +73,15 @@ RUN mkdir -p /etc/systemd/system/com.ninjarmm.lockhartd.service.d \
     && printf '[Service]\nEnvironment=OPENSSL_CONF=/dev/null\n' \
         > /etc/systemd/system/com.ninjarmm.lockhartd.service.d/10-openssl-conf.conf
 
+# Pin dnf's $releasever to the container's own Fedora version. At runtime the
+# deployment mounts the HOST's /etc/os-release over the container's (so NinjaOne
+# reports the host OS -- Bazzite, TrueNAS SCALE -- instead of Fedora). But dnf
+# also derives $releasever from os-release, so without this the first-boot agent
+# install would try the host's version (e.g. a Debian release on TrueNAS) against
+# Fedora repos and break. Pinning keeps dnf on the container's Fedora repos.
+RUN mkdir -p /etc/dnf/vars \
+    && . /etc/os-release && printf '%s\n' "$VERSION_ID" > /etc/dnf/vars/releasever
+
 # First-boot bootstrap: downloads + installs the token-stamped agent RPM if the
 # persistent /opt/NinjaRMMAgent volume is empty, then enables the agent service.
 COPY ninjarmm-bootstrap.sh /usr/local/bin/ninjarmm-bootstrap.sh

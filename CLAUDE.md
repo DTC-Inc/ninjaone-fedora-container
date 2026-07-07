@@ -36,7 +36,7 @@ These are easy to break and hard to debug — call them out in any review:
 
 6. **systemd-in-container needs cgroup + tmpfs.** Podman `--systemd=always` handles it; the compose/Custom-App path mounts `/sys/fs/cgroup` and tmpfs `/run`+`/tmp` explicitly. Privileged is required (cgroup, SMART via `/dev`, namespace handoff).
 
-7. **Reporting trade-offs are known and documented.** OS reports Fedora (the container), installed-packages is the container's RPM db, filesystem capacity comes from the host `/` bind-through at `/host` (plus `/mnt`). SMART and `in-host` commands are host-accurate. See [README.md § Reporting trade-offs](./README.md#reporting-trade-offs). Don't "fix" these by reintroducing the nsenter-the-agent design — it can't run backups.
+7. **Reporting is mostly host-accurate; only installed-packages stays container-flavored.** OS now reports the **host** (the deploy binds host `/etc/os-release` over the container's; dnf's `releasever` is pinned in the Containerfile so that doesn't break the agent install). Kernel, CPU/RAM, SMART, hostname, and — with host networking — NICs are the host's; filesystem capacity comes from the host `/` bind-through at `/host` (plus `/mnt`). **Installed-packages remains the container's RPM db (Fedora)** — the only way to fix that is to nsenter the agent into the host, which can't run backups *and* is impossible on TrueNAS (read-only `/opt`). Don't reintroduce the nsenter-the-agent design. See [README.md § Reporting trade-offs](./README.md#reporting-trade-offs).
 
 8. **`ninjarmm-bootstrap` must NOT be ordered `Before=ninjarmm-agent.service`, and it must use podman `--env-file` with a file that always exists.** Two deadlock/startup traps, both learned the hard way:
    - The vendor RPM's `%post` starts the agent with a **blocking** `systemctl start`. If bootstrap is ordered before the agent, `%post` deadlocks (it waits on the agent's start job, which systemd holds until bootstrap finishes). No `Before=`.
@@ -52,9 +52,10 @@ These are easy to break and hard to debug — call them out in any review:
 | Image build (systemd PID 1) | `docker/Containerfile` |
 | First-boot agent install | `docker/ninjarmm-bootstrap.{service,sh}` |
 | Host-namespace handoff | `docker/in-host` (`zpool`/`zfs` symlink to it) |
-| Full host access (RW) | host `/` → `/host:rw,rslave` in `quadlet/` + `compose/` (keep the two aligned) |
-| Podman quadlet | `quadlet/ninjarmm-agent.container` (deployed to `/etc/containers/systemd/` by `install.sh`) |
-| Docker compose / TrueNAS | `compose/docker-compose.yml` |
+| Full host access (RW) | host `/` → `/host:rw,rslave` in `bazzite/` + `truenas/` (keep the two aligned) |
+| Host-OS reporting | host `/etc/os-release` bound over the container's (`bazzite/` + `truenas/`); dnf `releasever` pinned in `docker/Containerfile` so the install still works |
+| Bazzite deploy (podman quadlet) | `bazzite/ninjarmm-agent.container` (deployed to `/etc/containers/systemd/` by `bazzite/install.sh`) |
+| TrueNAS deploy (docker compose) | `truenas/docker-compose.yml` |
 | Volume backing | named volume `ninjarmm-agent`, mounted at `/opt/NinjaRMMAgent` |
 | Agent download URL (deploy-local) | quadlet: `/etc/ninjarmm-agent.env` (written by `install.sh`); compose: `.env` / app env |
 
@@ -75,7 +76,7 @@ Per DTC standard: `development` is default, `release` is the protected promotion
 
 # Deploy the public image with no local build — agent installs on first boot
 sudo NINJA_AGENT_URL='https://<console>/...agent.rpm' \
-     IMAGE=ghcr.io/dtc-inc/ninjaone-fedora-container:latest ./scripts/install.sh
+     IMAGE=ghcr.io/dtc-inc/ninjaone-fedora-container:latest ./bazzite/install.sh
 
 # Tail logs (container name == host hostname)
 sudo journalctl -u ninjarmm-agent.service -f               # quadlet service, host side

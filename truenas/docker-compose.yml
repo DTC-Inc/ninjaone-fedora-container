@@ -67,6 +67,13 @@ services:
       - /proc:/host/proc:ro,rslave
       - /mnt:/mnt:rw,rslave
 
+      # Report the HOST's OS to NinjaOne, not the container's Fedora. The agent
+      # reads /etc/os-release verbatim; mounting the host's over the container's
+      # makes the device show up as its real OS (Bazzite, TrueNAS SCALE, ...).
+      # Bound at /usr/lib/os-release because /etc/os-release symlinks to it. dnf's
+      # $releasever is pinned in the image so this doesn't break the agent install.
+      - /etc/os-release:/usr/lib/os-release:ro
+
 volumes:
   ninjarmm-agent:
     name: ninjarmm-agent

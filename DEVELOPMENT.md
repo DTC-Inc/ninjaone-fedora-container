@@ -7,7 +7,7 @@ This is a DTC repo. Cross-cutting engineering standards (branching, PR process, 
 1. Branch from `development` with a name like `enhancement/<short-desc>` or `problem/<short-desc>`.
 2. Provide the agent one of two ways: drop your token-stamped RPM at the repo root as `./agent.rpm` (gitignored) to bake it in, **or** skip the RPM and set `NINJA_AGENT_URL` so the container downloads it at runtime.
 3. Build locally: `./scripts/build.sh` (only needed for the baked-RPM path; the runtime-download path uses the prebuilt public image).
-4. Test on a dev VM or your own machine: `sudo ./scripts/install.sh` (set `NINJA_AGENT_URL=...` for the download path).
+4. Test on a dev VM or your own machine: `sudo ./bazzite/install.sh` (set `NINJA_AGENT_URL=...` for the download path).
 5. Bump `VERSION` per [Semantic Versioning](https://kb.dtctoday.com/books/developer-operations-devops/page/semantic-versioning).
 6. Open a PR against `development`. CI builds + emits a per-PR pinnable image tag.
 7. Merge after review. CI promotes via tag re-push (no rebuild on merge).
@@ -22,14 +22,16 @@ ninjaone-fedora-container/
 │   ├── ninjarmm-bootstrap.sh       # the bootstrap logic
 │   └── in-host                     # run a host command via namespace handoff
 │                                   # (zpool/zfs symlink to it)
-├── quadlet/
-│   └── ninjarmm-agent.container   # Podman quadlet (deployed to /etc/containers/systemd/)
-├── compose/
-│   └── docker-compose.yml         # Docker alternative
+├── bazzite/                        # Bazzite / podman deployment
+│   ├── ninjarmm-agent.container    # Podman quadlet (deployed to /etc/containers/systemd/)
+│   ├── install.sh                  # build + lay down quadlet + start service
+│   ├── uninstall.sh                # tear down cleanly
+│   └── README.md
+├── truenas/                        # TrueNAS / Docker deployment
+│   ├── docker-compose.yml
+│   └── README.md
 ├── scripts/
-│   ├── build.sh               # local image build (podman or docker)
-│   ├── install.sh             # build + lay down quadlet + start service
-│   └── uninstall.sh           # tear down cleanly
+│   └── build.sh                    # shared local image build (podman or docker)
 ├── .github/workflows/
 │   ├── build-pr.yml           # CI gate: build + push per-PR image
 │   ├── promote.yml            # on PR merge: retag (no rebuild)
@@ -64,7 +66,7 @@ You'll want a target machine to test against — your own laptop is fine if it's
 ./scripts/build.sh
 sudo systemctl stop ninjarmm-agent.service          # if installed
 sudo podman volume rm ninjarmm-agent                # force a clean first boot
-sudo ./scripts/install.sh
+sudo ./bazzite/install.sh
 sudo journalctl -u ninjarmm-agent.service -f        # quadlet service (host side)
 sudo podman exec -it "$(hostname)" journalctl -f    # systemd INSIDE the container
 sudo podman exec -it "$(hostname)" bash             # poke around inside
