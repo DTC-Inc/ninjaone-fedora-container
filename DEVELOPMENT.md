@@ -49,6 +49,7 @@ Consequences and how we handle them:
 
 - **No `--pid=host`.** systemd must be PID 1, which rules out sharing the host PID namespace. So the agent runs in the *container's* namespace and a plain volume at `/opt/NinjaRMMAgent` is its persistent install (no bind/nsenter for the agent itself).
 - **Host introspection on demand.** Anything that must reflect host reality runs the host's own binary via `docker/in-host`, which `nsenter`s into the host namespaces through the bind-mounted host `/proc` (`/host/proc/1/ns/*`) — no `--pid=host` needed. `zpool`/`zfs` symlink to it so ZFS is version-matched against the host kernel module.
+- **Full host access at `/host`.** Host `/` is bind-mounted read-write at `/host` (established only while the container runs), so the file browser and Lockhart backups can reach and back up any host path. `/host/proc` stays read-only for the handoff.
 - **SMART** reads `/dev` directly (privileged) — namespace-independent.
 - **Reporting trade-offs** (OS shows Fedora, installed-packages is the container's db, filesystem capacity comes from the bind-through of `/mnt`) are documented in [README.md § Reporting trade-offs](./README.md#reporting-trade-offs).
 
@@ -92,7 +93,7 @@ Heuristic: if a tool is something a sysadmin would `dnf install` interactively w
 
 The fragile pieces are `docker/Containerfile` (systemd setup, unit masking), `docker/ninjarmm-bootstrap.{sh,service}` (first-boot agent install), and `docker/in-host` (host-namespace handoff). CI only *builds* the image — it can't boot systemd or talk to a real host — so changes here **must be validated on a real box**, and you should state which in the PR. Test matrix:
 
-- A **TrueNAS SCALE** box (the canonical appliance target: read-only root, ix-apps Docker, ZFS) — confirm the agent registers, **a backup runs (Lockhart)**, and `in-host zpool status` works.
+- A **TrueNAS SCALE** box (the canonical appliance target: read-only root, ix-apps Docker, ZFS) — confirm the agent registers, **a backup of a host path runs (Lockhart)** — e.g. `/mnt/<pool>/<dataset>` or `/host/etc` — and `in-host zpool status` works.
 - A podman host via the quadlet (Bazzite/Fedora) — confirm `--systemd=always` boots and the agent comes up.
 
 Watch for the classic systemd-in-container gotchas: cgroup mount, writable `/run`+`/tmp` tmpfs, and env vars set via the runtime reaching PID 1 but **not** the services it spawns (the bootstrap reads `NINJA_AGENT_URL` from `/proc/1/environ` for exactly this reason).

@@ -15,16 +15,8 @@ REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 BUILDER="${BUILDER:-podman}"
 IMAGE="${IMAGE:-localhost/ninjaone-fedora-container:latest}"
 RPM_PATH="${RPM_PATH:-$REPO_ROOT/agent.rpm}"
-FEDORA_VERSION="${FEDORA_VERSION:-41}"
+FEDORA_VERSION="${FEDORA_VERSION:-42}"
 
-if [ ! -f "$RPM_PATH" ]; then
-    echo "FATAL: $RPM_PATH not found." >&2
-    echo "Download a token-stamped agent RPM from NinjaOne and place it at $RPM_PATH." >&2
-    exit 1
-fi
-
-# Buildah/Podman expects the build context to contain the RPM at ./agent.rpm.
-# Copy in if necessary; tolerate the case where it's already at the path.
 BUILD_CTX="$(mktemp -d)"
 trap 'rm -rf "$BUILD_CTX"' EXIT
 
@@ -32,7 +24,20 @@ cp "$REPO_ROOT/docker/Containerfile" "$BUILD_CTX/Containerfile"
 cp "$REPO_ROOT/docker/ninjarmm-bootstrap.sh" "$BUILD_CTX/ninjarmm-bootstrap.sh"
 cp "$REPO_ROOT/docker/ninjarmm-bootstrap.service" "$BUILD_CTX/ninjarmm-bootstrap.service"
 cp "$REPO_ROOT/docker/in-host" "$BUILD_CTX/in-host"
-cp "$RPM_PATH" "$BUILD_CTX/agent.rpm"
+
+# Two ways to supply the agent:
+#   1) Bake it in  -- drop a token-stamped RPM at ./agent.rpm; it installs at build.
+#   2) Runtime URL -- no ./agent.rpm; stage a zero-byte placeholder (exactly as CI
+#      does) and the container downloads the agent on first boot from
+#      NINJA_AGENT_URL. This is the public, agent-free image.
+if [ -f "$RPM_PATH" ]; then
+    echo "Baking in agent RPM from $RPM_PATH"
+    cp "$RPM_PATH" "$BUILD_CTX/agent.rpm"
+else
+    echo "No $RPM_PATH -- building an AGENT-FREE image (the agent installs on first"
+    echo "boot via NINJA_AGENT_URL). Drop a token-stamped ./agent.rpm to bake one in."
+    : > "$BUILD_CTX/agent.rpm"
+fi
 
 echo "Building $IMAGE with $BUILDER (Fedora $FEDORA_VERSION)..."
 "$BUILDER" build \

@@ -26,9 +26,9 @@ These are easy to break and hard to debug — call them out in any review:
 
 1. **systemd is PID 1; the container is NOT `--pid=host`.** systemd refuses to boot unless it's PID 1, which is incompatible with `--pid=host`. The agent therefore runs in the *container's* namespace. This is the whole point — it lets the agent supervise `com.ninjarmm.lockhartd.service` (backups). Don't reintroduce `--pid=host`.
 
-2. **The agent install lives in a plain volume at `/opt/NinjaRMMAgent`.** No bind/nsenter for the agent itself. The `ninjarmm-agent` volume persists the install, identity, and self-updates across restarts.
+2. **The agent's state lives in the `/opt/NinjaRMMAgent` volume; its systemd units do NOT — they're re-laid every boot.** The volume persists the agent files, identity, and self-updates. But the RPM installs systemd units (`ninjarmm-agent.service`, the patcher, and — at runtime — `com.ninjarmm.lockhartd.service`) into the container's **ephemeral** rootfs (`/usr/lib/systemd/system`), which quadlet recreates on every start (`--rm`). So `ninjarmm-bootstrap` **caches the RPM in the volume** (`/opt/NinjaRMMAgent/.bootstrap/agent.rpm`) and **re-installs it on every boot where the agent unit is absent**, re-laying the units without re-downloading; the agent then re-reads its identity from the volume (same device) and re-creates lockhart itself. Don't assume the volume alone makes the agent persist — the boot-time re-lay is load-bearing.
 
-3. **Host-only facts go through `docker/in-host`.** It `nsenter`s into the host namespaces via the bind-mounted host `/proc` (`/host/proc/1/ns/*`) — which works *without* `--pid=host`. `zpool`/`zfs` are symlinks to it (version-matched ZFS against the host kernel module). Don't install the zfs userland in the image — its ioctl ABI won't match the host.
+3. **Host-only facts go through `docker/in-host`.** It `nsenter`s into the host's **mount/uts/ipc/net** namespaces via the bind-mounted host `/proc` (`/host/proc/1/ns/*`) — deliberately **not** the pid namespace: the container runs its own systemd (its own pid ns) and the host's is an *ancestor*, which `setns()` cannot join (`--pid` → EINVAL, `reassociate to namespace 'ns/pid' failed`). It also injects **`SYSTEMCTL_FORCE_BUS=1`** so host `systemctl` talks over the D-Bus message bus — systemctl-as-root otherwise prefers systemd's private socket (`/run/systemd/private`), whose handshake needs the host pid-ns alignment we lack. Don't re-add `--pid`, and keep `SYSTEMCTL_FORCE_BUS=1`. `zpool`/`zfs` are symlinks to it (version-matched ZFS against the host kernel module). Don't install the zfs userland in the image — its ioctl ABI won't match the host. **Mount split:** host `/` is bind-mounted **read-write** at `/host` (full host access — this is what makes the file browser + Lockhart backups see the whole host), but `/host/proc` is pinned **read-only** for the handoff. Keep that split — don't make `/host` read-only again or `/host/proc` writable.
 
 4. **Runtime env vars don't reach systemd's child services.** `NINJA_AGENT_URL` set via compose `environment:` reaches PID 1 (systemd) but not the units it spawns. `ninjarmm-bootstrap.sh` reads it from `/proc/1/environ` as a fallback (quadlet uses `EnvironmentFile` instead). Preserve that bridge.
 
@@ -36,7 +36,12 @@ These are easy to break and hard to debug — call them out in any review:
 
 6. **systemd-in-container needs cgroup + tmpfs.** Podman `--systemd=always` handles it; the compose/Custom-App path mounts `/sys/fs/cgroup` and tmpfs `/run`+`/tmp` explicitly. Privileged is required (cgroup, SMART via `/dev`, namespace handoff).
 
-7. **Reporting trade-offs are known and documented.** OS reports Fedora (the container), installed-packages is the container's RPM db, filesystem capacity comes from the `/mnt` bind-through. SMART and `in-host` commands are host-accurate. See [README.md § Reporting trade-offs](./README.md#reporting-trade-offs). Don't "fix" these by reintroducing the nsenter-the-agent design — it can't run backups.
+7. **Reporting trade-offs are known and documented.** OS reports Fedora (the container), installed-packages is the container's RPM db, filesystem capacity comes from the host `/` bind-through at `/host` (plus `/mnt`). SMART and `in-host` commands are host-accurate. See [README.md § Reporting trade-offs](./README.md#reporting-trade-offs). Don't "fix" these by reintroducing the nsenter-the-agent design — it can't run backups.
+
+8. **`ninjarmm-bootstrap` must NOT be ordered `Before=ninjarmm-agent.service`, and it must use podman `--env-file` with a file that always exists.** Two deadlock/startup traps, both learned the hard way:
+   - The vendor RPM's `%post` starts the agent with a **blocking** `systemctl start`. If bootstrap is ordered before the agent, `%post` deadlocks (it waits on the agent's start job, which systemd holds until bootstrap finishes). No `Before=`.
+   - Quadlet's `EnvironmentFile=` maps to podman `--env-file`, which does **not** honor systemd's `-` optional prefix and **requires the file to exist**. `install.sh` always creates `/etc/ninjarmm-agent.env` (empty if no URL). No leading `-`.
+   - Bootstrap's `ConditionPathExists=!/usr/lib/systemd/system/ninjarmm-agent.service` (the unit, not the binary) is what makes it re-run on each fresh container and skip once wired.
 
 ## Where things live
 
@@ -45,6 +50,7 @@ These are easy to break and hard to debug — call them out in any review:
 | Image build (systemd PID 1) | `docker/Containerfile` |
 | First-boot agent install | `docker/ninjarmm-bootstrap.{service,sh}` |
 | Host-namespace handoff | `docker/in-host` (`zpool`/`zfs` symlink to it) |
+| Full host access (RW) | host `/` → `/host:rw,rslave` in `quadlet/` + `compose/` (keep the two aligned) |
 | Podman quadlet | `quadlet/ninjarmm-agent.container` (deployed to `/etc/containers/systemd/` by `install.sh`) |
 | Docker compose / TrueNAS | `compose/docker-compose.yml` |
 | Volume backing | named volume `ninjarmm-agent`, mounted at `/opt/NinjaRMMAgent` |
