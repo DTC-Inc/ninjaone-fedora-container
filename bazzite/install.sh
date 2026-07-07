@@ -73,7 +73,7 @@ if [ -z "$NINJA_AGENT_URL" ] && [ ! -f "$REPO_ROOT/agent.rpm" ] \
 fi
 
 # Generate the quadlet with the resolved image baked in.
-sed "s|^Image=.*|Image=$IMAGE|" "$REPO_ROOT/quadlet/ninjarmm-agent.container" > "$QUADLET_FILE"
+sed "s|^Image=.*|Image=$IMAGE|" "$REPO_ROOT/bazzite/ninjarmm-agent.container" > "$QUADLET_FILE"
 chmod 0644 "$QUADLET_FILE"
 
 systemctl daemon-reload

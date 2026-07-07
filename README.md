@@ -12,7 +12,7 @@ The container runs its own **systemd as PID 1**, so the NinjaOne agent installs 
 | ZFS pools (`zpool`, `zfs`) | Host pools, version-matched — wrappers run the host's own binaries |
 | Filesystem capacity | Whole host is mounted **read-write** at `/host` (plus `/mnt`); the agent reports mounted volumes and can browse/back up any host path |
 | Hostname / container name | Both set to the host's real hostname (`%H`) |
-| OS reported | The container (Fedora) — see [Reporting trade-offs](#reporting-trade-offs) |
+| OS reported | The **host OS** (Bazzite, TrueNAS SCALE) — the deploy binds the host's `/etc/os-release` in |
 | Agent state / self-update | Persisted in the `ninjarmm-agent` named volume at `/opt/NinjaRMMAgent` |
 
 ## When to use this
@@ -42,7 +42,7 @@ cd ~/github/dtc-inc/ninjaone-fedora-container
 
 sudo NINJA_AGENT_URL='https://<your-console>/...agent.rpm' \
      IMAGE=ghcr.io/dtc-inc/ninjaone-fedora-container:latest \
-     ./scripts/install.sh
+     ./bazzite/install.sh
 ```
 
 **Docker Compose:**
@@ -55,7 +55,7 @@ EOF
 docker compose up -d
 ```
 
-**TrueNAS SCALE (Custom App):** point it at `compose/docker-compose.yml`, set the app's **hostname** to the box name, and set `NINJA_AGENT_URL` in the environment. Privileged must be enabled.
+**TrueNAS SCALE (Custom App):** point it at `truenas/docker-compose.yml`, set the app's **hostname** to the box name, and set `NINJA_AGENT_URL` in the environment. Privileged must be enabled. See [truenas/README.md](./truenas/README.md).
 
 The agent installs only on first boot; once it's in the `ninjarmm-agent` volume, restarts and upgrades skip the download. The URL carries a NinjaOne org token — `install.sh` stores it at `/etc/ninjarmm-agent.env` (0600); the compose `.env` is gitignored. Don't commit it.
 
@@ -102,7 +102,7 @@ Running the agent in the container (required for backups) changes a few reported
 | ZFS pool health | **Via scripts** | `zpool status` etc. through the `zpool`/`zfs` wrappers; NinjaOne has no native ZFS |
 | Filesystem capacity | Host datasets mounted at `/mnt` are reported | bind-through; pool-level detail still best from TrueNAS's own alerting |
 | Installed packages | The **container's** RPM db, not the host's | inherent to containerizing the agent |
-| OS / distro | Reports **Fedora** (the container), not the host OS | the agent reads its own `/etc/os-release` |
+| OS / distro | Reports the **host OS** (Bazzite, TrueNAS SCALE) | the deploy binds the host's `/etc/os-release` over the container's; dnf `releasever` is pinned so the install is unaffected |
 | Hostname | The host's real hostname | set via `%H` / `NINJA_HOSTNAME` |
 
 ## Host filesystem access from the container
@@ -130,9 +130,9 @@ Because the whole host is visible at `/host`, NinjaOne's file/folder backup (Loc
 ## Uninstall
 
 ```bash
-sudo ./scripts/uninstall.sh                  # leaves the agent volume in place
-sudo PURGE_STATE=1 ./scripts/uninstall.sh    # also removes the ninjarmm-agent volume
-sudo PURGE_IMAGE=1 ./scripts/uninstall.sh    # also removes the image
+sudo ./bazzite/uninstall.sh                  # leaves the agent volume in place
+sudo PURGE_STATE=1 ./bazzite/uninstall.sh    # also removes the ninjarmm-agent volume
+sudo PURGE_IMAGE=1 ./bazzite/uninstall.sh    # also removes the image
 ```
 
 ## Image distribution
