@@ -83,7 +83,7 @@ zpool status                                        # exercises the in-host hand
 
 ## Adding admin tools to the image
 
-The image ships with a curated tool set in `docker/Containerfile` — editors (nano, vim, tmux), networking (bind-utils, mtr, nmap-ncat, tcpdump), diagnostics (htop, lsof, strace, smartmontools), Python 3, etc. To add more:
+The image ships with a curated tool set in `docker/Containerfile` — editors (nano, vim, tmux), networking (bind-utils, mtr, nmap-ncat, tcpdump; NetworkManager with its daemon masked — `nmcli` symlinks to `in-host`), disk/diagnostics (htop, lsof, strace, smartmontools, parted), Python 3, etc. To add more:
 
 1. Edit `docker/Containerfile`, append package(s) to the `dnf install` block (alphabetical).
 2. Bump `VERSION` per [Semantic Versioning](https://kb.dtctoday.com/books/developer-operations-devops/page/semantic-versioning) — adding tooling is a **minor** bump.

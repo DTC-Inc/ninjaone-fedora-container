@@ -18,19 +18,22 @@ RUN dnf -y install \
         systemd \
         bash-completion zsh tmux nano vim-enhanced less man-db \
         sudo which file findutils coreutils util-linux procps-ng psmisc \
-        iproute iputils bind-utils net-tools traceroute mtr nmap-ncat \
+        iproute iputils bind-utils net-tools traceroute mtr nmap-ncat NetworkManager \
         openssh-clients rsync wget curl ca-certificates openssl jq git \
         tar gzip bzip2 xz zstd unzip \
         htop lsof strace tcpdump \
-        smartmontools lm_sensors pciutils usbutils hostname \
+        parted smartmontools lm_sensors pciutils usbutils hostname \
         python3 python3-pip \
     && dnf clean all \
     && rm -rf /var/cache/dnf
 
 # systemd-in-container hygiene: mask units that need real hardware or a console
-# and would only fail/slow the boot. Also mask systemd-networkd + systemd-resolved:
-# the container uses the host's network namespace (Network=host), so it must NOT
-# run its own network manager or DNS resolver. A container-side resolved collides
+# and would only fail/slow the boot. Also mask systemd-networkd, systemd-resolved,
+# and NetworkManager: the container uses the host's network namespace
+# (Network=host), so it must NOT run its own network manager or DNS resolver -- a
+# container-side NetworkManager would fight the host's over the shared interfaces
+# and could drop the host off the network. (The nmcli client is still shipped, but
+# symlinked to in-host so it drives the HOST's NetworkManager instead.) A container-side resolved collides
 # with the host's on 127.0.0.53 (shared loopback) and breaks name resolution --
 # which kills the agent download and check-in. With no resolved running, the
 # container's /etc/resolv.conf (podman points it at the host's) resolves via the
@@ -48,7 +51,9 @@ RUN systemctl set-default multi-user.target \
         systemd-journald-audit.socket \
         systemd-networkd.service \
         systemd-networkd.socket \
-        systemd-resolved.service
+        systemd-resolved.service \
+        NetworkManager.service \
+        NetworkManager-wait-online.service
 
 # Disable the kernel audit netlink for journald and dbus-broker. The host's
 # auditd owns the single audit socket, so a container opening it fails with
@@ -109,9 +114,10 @@ COPY ninjarmm-bootstrap.sh /usr/local/bin/ninjarmm-bootstrap.sh
 COPY ninjarmm-bootstrap.service /etc/systemd/system/ninjarmm-bootstrap.service
 
 # Host-namespace handoff: in-host runs a command inside the host's namespaces
-# (via the bind-mounted host /proc), so the host's own tools answer. zpool/zfs
-# are symlinks to it -> NinjaOne scripts and the remote terminal get real,
-# version-matched ZFS against the host pools without installing zfs in here.
+# (via the bind-mounted host /proc), so the host's own tools answer. zpool, zfs,
+# and nmcli are symlinks to it -> NinjaOne scripts and the remote terminal get
+# real version-matched ZFS against the host pools and an nmcli that drives the
+# HOST's NetworkManager, without running those daemons in here.
 COPY in-host /usr/local/bin/in-host
 
 # Optional baked agent. CI stages a zero-byte placeholder, so `|| true` keeps the
@@ -121,6 +127,7 @@ COPY agent.rpm /tmp/agent.rpm
 RUN chmod 0755 /usr/local/bin/ninjarmm-bootstrap.sh /usr/local/bin/in-host \
     && ln -sf in-host /usr/local/bin/zpool \
     && ln -sf in-host /usr/local/bin/zfs \
+    && ln -sf in-host /usr/local/bin/nmcli \
     && systemctl enable ninjarmm-bootstrap.service \
     && mkdir -p /opt/NinjaRMMAgent
 
