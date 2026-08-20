@@ -35,16 +35,24 @@ services:
       # ninjarmm-agent volume is empty. Leave unset if the image baked an RPM.
       - NINJA_AGENT_URL=${NINJA_AGENT_URL:-}
 
-    # systemd needs writable /run and /tmp.
+    # systemd needs writable /run and /tmp. It does NOT need a /sys/fs/cgroup
+    # bind -- see the note above the volumes block.
     tmpfs:
       - /run
       - /run/lock
       - /tmp
 
+    # Deliberately NO /sys/fs/cgroup bind. That is the cgroup *v1* recipe, and
+    # on a v2 host (TrueNAS SCALE 25.x, and every modern distro) it is what stops
+    # the container from booting. Docker defaults to cgroupns=private on v2, so
+    # privileged already gives PID 1 a writable /sys/fs/cgroup namespaced to the
+    # container's own cgroup -- the same setup podman's --systemd=always does for
+    # the quadlet. Binding the HOST's tree over that leaves systemd reading 0::/
+    # from /proc/self/cgroup while looking at the host's root cgroup: it fails to
+    # create init.scope, aborts with "Failed to allocate manager object", and the
+    # container exits within a second of starting. (On a v1 host the bind IS
+    # required, paired with cgroup: host -- not a configuration we support.)
     volumes:
-      # cgroup hierarchy for systemd (cgroup v2).
-      - /sys/fs/cgroup:/sys/fs/cgroup:rw
-
       # Agent install + identity + runtime data + logs persist here. With the
       # agent now in the container's own namespace, a plain volume at the
       # canonical path is all it needs -- no bind/nsenter handoff.
