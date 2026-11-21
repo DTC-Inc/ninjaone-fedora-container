@@ -98,3 +98,7 @@ sudo systemctl start ninjarmm-agent.service
 - Quadlet and compose must stay structurally aligned — same volumes, same env, same privileged/systemd setup. Change one, change the other.
 - The Containerfile's `dnf -y install agent.rpm || true` tolerates a placeholder RPM, so the published image is intentionally agent-free. CI (`build-pr.yml`, `release.yml`) stages a zero-byte `agent.rpm` and the whole `docker/` dir as build context.
 - **CI only builds the image — it cannot boot systemd or reach a host.** The boot path (systemd setup, bootstrap unit, `in-host`) must be validated on a real box; backups specifically must be validated on TrueNAS. State tested targets in the PR.
+
+## Credentials never live in code
+
+No key, password, token, connection string, installer or enrollment token goes into this repo: not in code, tests, samples, comments, commit messages or PR descriptions. Credentials live in a vault (1Password, Azure Key Vault, Windmill secret variables, NinjaOne script variables or CI secrets) and code reads them at run time; a reference such as `op://vault/item/field` is fine to commit. A credential found in code is leaked: rotate it first, then remove it from the code, and record the location and type (never the value) on a Halo ticket. The standard: https://kb.dtctoday.com/books/developer-operations-devops/page/credentials-never-live-in-code-the-standard
